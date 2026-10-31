@@ -16,6 +16,14 @@ Painel de iluminação RGB para a área de trabalho COSMIC, com interface GTK 3 
 
 A seleção de cor atualiza a prévia. A iluminação só é enviada ao hardware quando você clica em **Aplicar iluminação**. A quantidade de LEDs de uma zona ARGB precisa ser informada pelo usuário; o aplicativo não consegue contar os LEDs físicos da cadeia.
 
+## Capturas de tela
+
+A captura da zona ARGB mostra a configuração usada na máquina que gerou a imagem. Informe a quantidade física de LEDs do seu próprio conjunto; o valor exibido não é uma detecção automática.
+
+![Visão geral do RGB Studio com quatro dispositivos, seletor de espectro e paleta de 18 cores.](docs/images/rgb-studio-overview.png)
+
+![Painel da zona Ventoinhas ARGB com controles de cor, efeitos e tamanho da zona.](docs/images/rgb-studio-argb-zone.png)
+
 ## Requisitos
 
 - Linux com COSMIC ou outro ambiente que mostre indicadores Ayatana/AppIndicator.

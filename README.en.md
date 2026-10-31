@@ -16,6 +16,14 @@ RGB lighting controls for the COSMIC desktop, built with GTK 3 and powered by [O
 
 Choosing a color updates the preview. Hardware changes are sent only after clicking **Apply lighting**. The LED count for an ARGB zone must be entered by the user; the application cannot count the physical LEDs in a chain.
 
+## Screenshots
+
+The ARGB screenshot shows the setting from the machine used to capture it. Enter the physical LED count for your own setup; the displayed value is not detected automatically. The screenshots show the current Portuguese app interface.
+
+![RGB Studio overview with four devices, spectrum picker, and 18-color palette.](docs/images/rgb-studio-overview.png)
+
+![ARGB fan zone panel with color, effect, and zone-size controls.](docs/images/rgb-studio-argb-zone.png)
+
 ## Requirements
 
 - Linux with COSMIC or another desktop that displays Ayatana/AppIndicator status icons.
