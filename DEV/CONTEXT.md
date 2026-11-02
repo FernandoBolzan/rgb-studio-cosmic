@@ -30,4 +30,5 @@
 
 - Current saved settings target both Corsair modules with green Color Pulse and `restore_on_startup=true`; preserve these through service restart.
 - The memory/GPU correction is installed locally and published as `c111bab`; prior mode/scene work remains in its history.
+- The first versioned release `v0.1.0` is published on GitHub; its annotated tag targets `161f6e0` on `main`.
 - Current local hardware: 2 Corsair Vengeance RGB Pro modules, ASUS PRIME B550M-A, and Palit GeForce RTX 3060; advertised modes vary by controller.

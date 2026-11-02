@@ -4,6 +4,15 @@ Record a short summary here after substantive work.
 
 Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for older entries after compaction.
 
+## 2026-11-02 - Release v0.1.0
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: structured bilingual changelog, README version/release links, and pinned installation instructions.
+- Why: publish the first traceable version of RGB Studio with clear compatibility and feature notes.
+- Verified: 4 unit tests, Python compilation, whitespace checks, annotated tag target, and GitHub latest release.
+- Risks: release is pre-1.0; hardware support remains OpenRGB/controller-specific; no binary package is attached.
+- Next context: release `v0.1.0` is live; monitor service behavior and user reports, preserve the existing local service-unit edit.
+
 ## 2026-11-02 - Corsair DRAM and GPU effects
 
 - Spec: `DEV/SPECS/ACTIVE.md`

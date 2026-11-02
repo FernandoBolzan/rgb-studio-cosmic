@@ -24,3 +24,12 @@
 - Failed: none observed.
 - Published: memory/GPU change is on `origin/main` as `c111bab`; the earlier mode/app audit is `838ccf9`, and startup restoration is in its history as `adc6b3a`.
 - Pending: observe restoration after a full system boot; a service restart exercised the same app startup path.
+
+## Release v0.1.0
+
+- Published GitHub release: https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.0
+- Annotated tag `v0.1.0` points to `161f6e0`; `main` and the tag were confirmed on `origin`.
+- First versioned release; no database/config migrations or binary attachments. GitHub provides the source archives.
+- Compatibility and runtime requirements are documented in both READMEs; hardware verification used OpenRGB 1.1 on Pop!_OS with the local Corsair DIMMs and Palit GPU.
+- Rollback: no data migration to reverse. If a release regression appears, ship a corrective `v0.1.1`; the pre-release source state is commit `7d5da60`.
+- Monitoring/owner: no telemetry is configured; the project maintainer can monitor the user service (`systemctl --user status rgb-panel.service`) and user reports.
