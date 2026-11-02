@@ -18,10 +18,12 @@
 
 - `contrib/rgb-panel.service` already has an uncommitted user change (`Restart=always`); preserve it.
 - Legacy settings do not identify the previous target or effect; first restore defaults to all devices and fixed color.
-- The active installed source now matches this repository version.
-- Exclude the pre-existing service-unit edit from the release commit.
-- Fix is installed and pushed to `origin/main` as commit `246e7c3`.
+- The current mode/scene improvements are installed at `~/.local/share/rgb-panel/rgb_panel.py`; its SHA-256 matches the repository source.
+- The user service is active and enabled after restart, with no systemd restarts reported.
+- Exclude the pre-existing service-unit edit from any publish operation.
+- No project issues or pull requests were open/listed when checked on 2026-11-02.
 
 ## Next Context
 
-- Future settings now preserve target and effect; the legacy settings on this machine were migrated to `target=all`.
+- Future settings preserve target, effect, and per-zone LED counts; the existing settings still restore `target=all`, `mode=Direct`.
+- Current local hardware: 2 Corsair Vengeance RGB Pro modules, ASUS PRIME B550M-A, and Palit GeForce RTX 3060; advertised modes vary by controller.

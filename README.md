@@ -12,9 +12,11 @@ Painel de iluminação RGB para a área de trabalho COSMIC, com interface GTK 3 
 - Escolhe matiz e brilho arrastando no espectro; ajusta a saturação, informa o código HEX ou escolhe entre 18 tons.
 - Controla brilho, velocidade e efeitos que o dispositivo disponibiliza.
 - Salva e recupera cenas RGB.
-- Permite selecionar um dispositivo ou uma zona ARGB da placa-mãe.
+- Permite selecionar dispositivos e as zonas ARGB endereçáveis anunciadas pelo OpenRGB.
 
 A seleção de cor atualiza a prévia. A iluminação só é enviada ao hardware quando você clica em **Aplicar iluminação**. A quantidade de LEDs de uma zona ARGB precisa ser informada pelo usuário; o aplicativo não consegue contar os LEDs físicos da cadeia.
+
+Os efeitos disponíveis dependem de cada dispositivo. Ao selecionar **Todo o sistema** ou um grupo, a lista mostra somente os modos comuns a todos os componentes do alvo. Selecione um componente individual para acessar os efeitos específicos dele. O RGB Studio envia ao OpenRGB o nome exato do modo anunciado pelo dispositivo; se um modo salvo deixar de existir, a restauração informa o problema em vez de trocar silenciosamente para outro efeito. Brilho e velocidade também dependem do suporte do efeito e do dispositivo.
 
 ## Capturas de tela
 
@@ -56,7 +58,7 @@ O ícone RGB aparece na área de indicadores do COSMIC. Abra **RGB Studio → Ab
 
 ## Preferências e cenas
 
-As preferências ficam em `~/.config/rgb-panel/settings.json`, e as cenas em `~/.config/rgb-panel/presets/`. Esses arquivos são locais e não fazem parte do repositório. Depois que o OpenRGB detecta os dispositivos, o RGB Studio reaplica a última iluminação configurada ao iniciar. A preferência guarda o alvo, a cor, o efeito, o brilho, a velocidade e, para zonas ARGB, a quantidade de LEDs.
+As preferências ficam em `~/.config/rgb-panel/settings.json`, e as cenas em `~/.config/rgb-panel/presets/`. Esses arquivos são locais e não fazem parte do repositório. Depois que o OpenRGB detecta os dispositivos, o RGB Studio reaplica a última iluminação configurada ao iniciar. A preferência guarda o alvo, a cor, o efeito, o brilho, a velocidade e a quantidade de LEDs por zona ARGB. As cenas também guardam o componente e a contagem da zona.
 
 Arquivos de preferências de versões antigas guardam apenas a cor e a quantidade de LEDs. Na primeira restauração, esses arquivos são aplicados a **Todo o sistema**, priorizando um modo de cor fixa quando disponível, com brilho em 100% e velocidade em 50%; depois, a aplicação salva também o alvo e os demais ajustes.
 

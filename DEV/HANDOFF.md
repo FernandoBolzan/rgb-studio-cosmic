@@ -12,13 +12,13 @@ This file should stay small. Refresh it after substantive work or run `orquestra
 
 ## Latest Work
 
-- Entry: saved RGB configuration reapplies after device discovery; installed service verified and fix published.
+- Entry: mode and scene handling reviewed; per-device modes and ARGB zones improved; local install verified.
 - Spec: `SPECS/ACTIVE.md`
-- Changed: `rgb_panel.py`, `README.md`, `README.en.md`, `CHANGELOG.md`.
-- Verified: syntax, whitespace, and active service restoration passed; see `VERIFY.md`.
-- Risks: legacy settings do not identify target or effect and restore to all devices.
-- Next context: observe behavior on a later full system boot; preserve the local service-unit edit.
+- Changed: `rgb_panel.py`, both READMEs, `CHANGELOG.md`, and app audit/architecture notes.
+- Verified: syntax, whitespace, installed-source SHA, service active/enabled, and saved-state rewrite; see `VERIFY.md`.
+- Risks: device support still depends on OpenRGB; no automated test suite or physical effect sweep.
+- Next context: publish the reviewed code/docs to `origin/main`, excluding the local service-unit edit; observe restoration after a full boot.
 
 ## Recent Entries
 
-- 2026-11-02: startup restoration installed and verified locally; commit `246e7c3` pushed to `origin/main`.
+- 2026-11-02: startup restoration fix and documentation are on `origin/main` as `adc6b3a`.

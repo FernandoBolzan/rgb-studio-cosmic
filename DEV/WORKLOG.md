@@ -4,6 +4,15 @@ Record a short summary here after substantive work.
 
 Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for older entries after compaction.
 
+## 2026-11-02 - Mode handling and app audit
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: normalized mode matching and CLI errors; added per-device targets/all ARGB zones, per-zone LED counts, stricter scene restoration, atomic JSON writes, bilingual docs, and `DEV/APP_AUDIT.md`.
+- Why: supported effects could be hidden or silently replaced; scenes could lose target/zone context; the first ARGB zone was the only one exposed.
+- Verified: `python3 -m py_compile rgb_panel.py`, `git diff --check`, installed source SHA matches, service active/enabled and startup settings rewritten.
+- Risks: no automated tests; effect capabilities and support remain OpenRGB/device-specific; no physical effect sweep.
+- Next context: publish intended files to `origin/main` without staging `contrib/rgb-panel.service`; observe behavior on a full boot.
+
 ## 2026-11-02 - Restore saved RGB settings on startup
 
 - Spec: `DEV/SPECS/ACTIVE.md`

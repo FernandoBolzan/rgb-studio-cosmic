@@ -9,6 +9,7 @@
 | `WORKLOG.md` | Compact chronological hook of substantive work |
 | `VERIFY.md` | Latest verification evidence and outcomes |
 | `ARCHITECTURE.md` | Living project architecture |
+| `APP_AUDIT.md` | App review findings, evidence, and prioritized improvement backlog |
 | `DECISIONS.md` | Consolidated technical decisions |
 | `ADR/` | Formal decision records |
 | `API/` | API documentation |

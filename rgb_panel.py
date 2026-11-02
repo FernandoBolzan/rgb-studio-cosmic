@@ -112,6 +112,16 @@ def parse_devices(output):
     return devices
 
 
+def write_json_atomic(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + '.tmp')
+    try:
+        temporary.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 class ColorCanvas:
     """Full-spectrum HSV field with one direct pointer target."""
     def __init__(self, changed):
@@ -258,6 +268,7 @@ class Panel:
     def load_settings(self):
         defaults = {
             'zone_led_count': DEFAULT_ZONE_LEDS,
+            'zone_led_counts': {},
             'color': '#39D353',
             'target': None,
             'target_label': None,
@@ -277,11 +288,22 @@ class Panel:
             target_label = data.get('target_label')
             target_kind = data.get('target_kind')
             mode = data.get('mode')
+            raw_zone_counts = data.get('zone_led_counts', {})
+            zone_led_counts = {}
+            if isinstance(raw_zone_counts, dict):
+                for key, value in raw_zone_counts.items():
+                    if not isinstance(key, str):
+                        continue
+                    try:
+                        zone_led_counts[key] = max(1, min(500, int(value)))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
             restore_on_startup = data.get('restore_on_startup', 'color' in data)
             if not isinstance(restore_on_startup, bool):
                 restore_on_startup = 'color' in data
             return {
                 'zone_led_count': max(1, min(500, count)),
+                'zone_led_counts': zone_led_counts,
                 'color': color,
                 'target': target if isinstance(target, str) else None,
                 'target_label': target_label if isinstance(target_label, str) else None,
@@ -296,17 +318,19 @@ class Panel:
             return defaults
 
     def save_settings(self):
-        CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(json.dumps(self.settings, indent=2), encoding='utf-8')
+        write_json_atomic(CONFIG, self.settings)
 
     def command(self, args):
         result = subprocess.run(
             [OPENRGB, '--noautoconnect', *args],
             capture_output=True, text=True, timeout=45)
         combined = result.stdout + result.stderr
-        if result.returncode or 'Connection attempt failed' in combined:
-            raise RuntimeError((result.stderr or result.stdout or
-                                'O OpenRGB não conseguiu aplicar o ajuste')[-1800:])
+        errors = [line.strip() for line in combined.splitlines()
+                  if re.match(r'^\s*error:', line, re.IGNORECASE)]
+        if result.returncode or 'Connection attempt failed' in combined or errors:
+            message = '\n'.join(errors) or result.stderr or result.stdout or \
+                'O OpenRGB não conseguiu aplicar o ajuste'
+            raise RuntimeError(message[-1800:])
         return result.stdout
 
     def submit(self, job, done, quiet=False):
@@ -369,16 +393,34 @@ class Panel:
             self.startup_restore_started = True
             self.restore_saved_configuration()
 
-    def preferred_mode(self, devices, requested=None):
+    def common_modes(self, devices):
         if not devices:
-            return None
-        common_modes = set(devices[0]['modes'])
+            return {}
+        common = {mode.casefold(): mode for mode in devices[0]['modes']}
         for device in devices[1:]:
-            common_modes &= set(device['modes'])
-        if requested in common_modes:
-            return requested
-        return next((mode for mode in ('Direct', 'Static') if mode in common_modes),
-                    next(iter(sorted(common_modes)), None))
+            supported = {mode.casefold() for mode in device['modes']}
+            common = {key: mode for key, mode in common.items() if key in supported}
+        return common
+
+    def mode_for_device(self, device, requested=None):
+        modes = {mode.casefold(): mode for mode in device['modes']}
+        if requested is not None:
+            resolved = modes.get(requested.casefold())
+            if resolved is None:
+                raise ValueError(
+                    f"{device['name']} não oferece o modo de iluminação “{requested}”.")
+            return resolved
+        return (modes.get('direct') or modes.get('static') or
+                next(iter(device['modes']), None))
+
+    def preferred_mode(self, devices, requested=None):
+        common = self.common_modes(devices)
+        if requested is not None and requested.casefold() in common:
+            return common[requested.casefold()]
+        for preferred in ('direct', 'static'):
+            if preferred in common:
+                return common[preferred]
+        return next((common[key] for key in sorted(common)), None)
 
     def target_for_devices(self, devices, preferred=None):
         device_ids = {device['id'] for device in devices}
@@ -405,22 +447,25 @@ class Panel:
         self.startup_restore_attempts += 1
 
         target_key = self.settings.get('target') or 'all'
-        spec = self.target_specs.get(target_key)
-        if not spec and self.settings.get('target_label'):
-            matches = [candidate for candidate in self.target_specs.values()
-                       if candidate['label'] == self.settings['target_label'] and
-                       candidate['kind'] == self.settings.get('target_kind')]
-            if len(matches) == 1:
-                spec = matches[0]
-                target_key = spec['key']
+        spec = self.find_saved_target(
+            target_key, self.settings.get('target_label'),
+            self.settings.get('target_kind'))
         if not spec:
             logging.warning('Saved RGB target %r is unavailable; skipping startup restore',
                             target_key)
             self.set_status('O componente salvo não foi encontrado', 'error')
             return
+        target_key = spec['key']
 
         devices = spec['devices']
-        mode = self.preferred_mode(devices, self.settings.get('mode'))
+        requested_mode = self.settings.get('mode')
+        common = self.common_modes(devices)
+        if requested_mode and requested_mode.casefold() not in common:
+            logging.warning('Saved RGB mode %r is unavailable for target %r',
+                            requested_mode, target_key)
+            self.set_status('O efeito salvo não está disponível neste componente', 'error')
+            return
+        mode = self.preferred_mode(devices, requested_mode)
         color = self.settings['color']
         brightness = self.settings['brightness']
         speed = self.settings['speed']
@@ -429,6 +474,28 @@ class Panel:
         else:
             self.apply_devices(devices, color, mode, brightness, speed,
                                target_key=target_key, quiet=True)
+
+    def find_saved_target(self, key=None, label=None, kind=None):
+        keyed = self.target_specs.get(key) if key else None
+        if label:
+            matches = [candidate for candidate in self.target_specs.values()
+                       if candidate['label'] == label and
+                       (kind is None or candidate['kind'] == kind)]
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                return keyed if keyed in matches else None
+            # Older releases named every ARGB zone "Ventoinhas ARGB".
+            if label == 'Ventoinhas ARGB' and kind == 'zone':
+                if keyed and keyed['kind'] == 'zone':
+                    return keyed
+                zones = [candidate for candidate in self.target_specs.values()
+                         if candidate['kind'] == 'zone']
+                return zones[0] if len(zones) == 1 else None
+            if keyed and keyed['label'] == label and (kind is None or keyed['kind'] == kind):
+                return keyed
+            return None
+        return keyed
 
     def record_applied_configuration(self, color, target_key, mode, brightness,
                                      speed, zone_led_count=None):
@@ -445,7 +512,15 @@ class Panel:
         })
         if zone_led_count is not None:
             self.settings['zone_led_count'] = zone_led_count
+            self.settings.setdefault('zone_led_counts', {})[target_key] = zone_led_count
         self.save_settings()
+
+    def zone_led_count_for(self, spec):
+        counts = self.settings.get('zone_led_counts', {})
+        value = counts.get(spec['key']) if isinstance(counts, dict) else None
+        if value is None:
+            value = self.settings.get('zone_led_count', DEFAULT_ZONE_LEDS)
+        return max(1, min(500, int(value)))
 
     def make_targets(self):
         specs = {
@@ -459,28 +534,12 @@ class Panel:
                     if any(key in d['name'].lower() for key in ('corsair', 'memory', 'dram', 'ram'))]
         graphics = [d for d in self.devices
                     if any(key in d['name'].lower() for key in ('geforce', 'radeon', 'gpu', 'palit'))]
-        assigned = {d['id'] for d in boards + memories + graphics}
-
         for device in boards:
             key = f"device:{device['id']}"
             specs[key] = {
                 'key': key, 'kind': 'device', 'label': device['name'],
                 'meta': 'Placa-mãe', 'devices': [device], 'device': device,
             }
-            zones = device['zones']
-            zone_index = next(
-                (i for i, name in enumerate(zones)
-                 if 'addressable' in name.lower() or 'argb' in name.lower()),
-                None)
-            if zone_index is not None:
-                zone_key = f"zone:{device['id']}:{zone_index}"
-                specs[zone_key] = {
-                    'key': zone_key, 'kind': 'zone',
-                    'label': 'Ventoinhas ARGB',
-                    'meta': zones[zone_index], 'devices': [device],
-                    'device': device, 'zone_index': zone_index,
-                }
-
         if memories:
             key = 'memory:' + ','.join(d['id'] for d in memories)
             label = 'Memória Corsair' if any('corsair' in d['name'].lower() for d in memories) else 'Memória RGB'
@@ -497,34 +556,53 @@ class Panel:
                 }
 
         for device in self.devices:
-            if device['id'] in assigned:
-                continue
             key = f"device:{device['id']}"
-            specs[key] = {
-                'key': key, 'kind': 'device', 'label': device['name'],
-                'meta': 'Dispositivo RGB', 'devices': [device], 'device': device,
-            }
+            if key not in specs:
+                specs[key] = {
+                    'key': key, 'kind': 'device', 'label': device['name'],
+                    'meta': ('Módulo de memória' if device in memories else
+                             'Placa de vídeo' if device in graphics else
+                             'Dispositivo RGB'),
+                    'devices': [device], 'device': device,
+                }
+            for zone_index, name in enumerate(device['zones']):
+                if not any(token in name.casefold() for token in ('addressable', 'argb')):
+                    continue
+                zone_key = f"zone:{device['id']}:{zone_index}"
+                specs[zone_key] = {
+                    'key': zone_key, 'kind': 'zone',
+                    'label': f"{device['name']} · {name}",
+                    'meta': 'Zona ARGB endereçável', 'devices': [device],
+                    'device': device, 'zone_index': zone_index,
+                }
 
         order = ['all']
         for device in boards:
             order.append(f"device:{device['id']}")
-            zone_index = next(
-                (i for i, name in enumerate(device['zones'])
-                 if 'addressable' in name.lower() or 'argb' in name.lower()),
-                None)
-            if zone_index is not None:
-                order.append(f"zone:{device['id']}:{zone_index}")
         if memories:
             order.append('memory:' + ','.join(d['id'] for d in memories))
         order.extend(f"device:{d['id']}" for d in graphics)
+        for device in self.devices:
+            device_key = f"device:{device['id']}"
+            if device_key in specs and device_key not in order:
+                order.append(device_key)
+            for zone_index, name in enumerate(device['zones']):
+                zone_key = f"zone:{device['id']}:{zone_index}"
+                if zone_key in specs:
+                    order.append(zone_key)
         order.extend(k for k in specs if k not in order)
         return specs, order
 
     def rebuild_targets(self):
         specs, order = self.make_targets()
         self.target_specs = specs
-        if self.selected_target not in specs and self.detected:
-            self.selected_target = 'all'
+        if (self.detected and
+                (self.selected_target not in specs or
+                 self.selected_target == self.settings.get('target'))):
+            saved = self.find_saved_target(
+                self.settings.get('target'), self.settings.get('target_label'),
+                self.settings.get('target_kind'))
+            self.selected_target = saved['key'] if saved else 'all'
         if not self.window:
             return
         self.target_buttons = {}
@@ -601,20 +679,34 @@ class Panel:
         self.selected_target_label.set_text(spec['label'])
         self.mode_combo.remove_all()
         selected = spec['devices']
-        modes = set(selected[0]['modes']) if selected else set()
-        for device in selected[1:]:
-            modes &= set(device['modes'])
-        choices = sorted(modes, key=lambda mode: (mode.casefold() not in ('direct', 'static'), mode.casefold()))
+        modes = self.common_modes(selected)
+        choices = sorted(
+            modes.values(),
+            key=lambda mode: (mode.casefold() not in ('direct', 'static'), mode.casefold()))
         for mode in choices:
             self.mode_combo.append(mode, MODE_LABELS.get(mode.casefold(), mode))
-        preferred = 'Direct' if 'Direct' in modes else ('Static' if 'Static' in modes else None)
+        saved_mode = (self.settings.get('mode')
+                      if self.selected_target == self.settings.get('target') else None)
+        preferred = self.preferred_mode(selected, saved_mode)
         self.mode_combo.set_active_id(preferred or (choices[0] if choices else None))
+        self.mode_combo.set_tooltip_text(
+            'Mostrando apenas efeitos compatíveis com todos os dispositivos deste alvo.'
+            if len(selected) > 1 else
+            'Efeitos e controles disponíveis para este dispositivo, conforme o OpenRGB.')
+        if not choices:
+            self.mode_hint.set_text('O OpenRGB não anunciou modos para este alvo.')
+        elif len(selected) > 1:
+            self.mode_hint.set_text(
+                f"Exibindo efeitos comuns aos {len(selected)} dispositivos deste alvo. "
+                'Selecione um componente para ver os efeitos específicos.')
+        else:
+            self.mode_hint.set_text('Efeitos anunciados pelo OpenRGB para este componente.')
         self.update_mode_sensitivity()
         is_zone = spec['kind'] == 'zone'
         self.zone_panel.set_visible(is_zone)
-        self.apply_button.set_label('Aplicar nas ventoinhas' if is_zone else 'Aplicar iluminação')
+        self.apply_button.set_label('Aplicar na zona ARGB' if is_zone else 'Aplicar iluminação')
         if is_zone:
-            self.led_count.set_value(self.settings.get('zone_led_count', DEFAULT_ZONE_LEDS))
+            self.led_count.set_value(self.zone_led_count_for(spec))
             self.zone_hint.set_text(
                 f"{spec['meta']} · limite do conector: 500 LEDs. O controlador não informa quantos LEDs físicos estão ligados; use o total real para efeitos por LED.")
         self.set_sensitivity('rgb-primary', bool(selected))
@@ -628,8 +720,9 @@ class Panel:
         if not hasattr(self, 'brightness'):
             return
         mode = self.mode_combo.get_active_id()
-        self.brightness.set_sensitive(bool(mode and mode != 'Off'))
-        self.speed.set_sensitive(bool(mode and mode not in ('Direct', 'Static', 'Off')))
+        normalized = mode.casefold() if mode else ''
+        self.brightness.set_sensitive(bool(normalized and normalized != 'off'))
+        self.speed.set_sensitive(bool(normalized and normalized not in ('direct', 'static', 'off')))
 
     def apply_current(self, *_):
         spec = self.current_spec()
@@ -675,16 +768,14 @@ class Panel:
         def job():
             args = []
             for device in devices:
-                available = device['modes']
-                chosen = mode if mode in available else next(
-                    (name for name in ('Direct', 'Static') if name in available),
-                    available[0] if available else None)
+                chosen = self.mode_for_device(device, mode)
                 if not chosen:
-                    continue
+                    raise RuntimeError(f"{device['name']} não informa modos de iluminação.")
                 args.extend(['--device', device['id'], '--mode', chosen])
-                if chosen in ('Direct', 'Static'):
+                normalized = chosen.casefold()
+                if normalized in ('direct', 'static'):
                     args.extend(['--color', self.scaled_color(color, brightness)])
-                elif chosen != 'Off':
+                elif normalized != 'off':
                     args.extend(['--color', color.lstrip('#'), '--speed', str(speed),
                                  '--brightness', str(brightness)])
             if not args:
@@ -704,23 +795,29 @@ class Panel:
             return
         device = spec['device']
         zone = spec['zone_index']
-        count = (self.led_count.get_value_as_int() if hasattr(self, 'led_count') else
-                 self.settings.get('zone_led_count', DEFAULT_ZONE_LEDS))
+        count = (self.led_count.get_value_as_int()
+                 if hasattr(self, 'led_count') and self.selected_target == spec['key']
+                 else self.zone_led_count_for(spec))
 
         def job():
+            chosen = self.mode_for_device(device, mode)
+            if not chosen:
+                raise RuntimeError(f"{device['name']} não informa modos de iluminação.")
+            normalized = chosen.casefold()
             args = ['--device', device['id'], '--zone', str(zone), '--size', str(count),
-                    '--mode', mode]
-            if mode in ('Direct', 'Static'):
+                    '--mode', chosen]
+            if normalized in ('direct', 'static'):
                 args += ['--color', self.scaled_color(color, brightness)]
-            elif mode != 'Off':
+            elif normalized != 'off':
                 args += ['--color', color.lstrip('#'), '--speed', str(speed),
                          '--brightness', str(brightness)]
             return self.command(args)
 
         def complete(_result):
             self.record_applied_configuration(
-                color, spec['key'], mode, brightness, speed, zone_led_count=count)
-            self.set_status(f'Ventoinhas: tom aplicado na zona de {count} LEDs', 'good')
+                color, spec['key'], self.mode_for_device(device, mode), brightness,
+                speed, zone_led_count=count)
+            self.set_status(f'Zona ARGB configurada para {count} LEDs', 'good')
         self.submit(job, complete, quiet=quiet)
 
     def resize_zone(self, spec, count):
@@ -732,6 +829,7 @@ class Panel:
 
         def complete(_result):
             self.settings['zone_led_count'] = count
+            self.settings.setdefault('zone_led_counts', {})[spec['key']] = count
             self.save_settings()
             self.set_status(f'Zona ARGB configurada para {count} LEDs', 'good')
         self.submit(job, complete)
@@ -926,6 +1024,9 @@ class Panel:
         self.mode_combo.set_hexpand(True)
         self.mode_combo.connect('changed', self.update_mode_sensitivity)
         panel.pack_start(self.mode_combo, False, False, 0)
+        self.mode_hint = self.label('', 'rgb-muted')
+        self.mode_hint.set_line_wrap(True)
+        panel.pack_start(self.mode_hint, False, False, 0)
         self.brightness = self.scale_row(panel, 'Brilho', 100)
         self.speed = self.scale_row(panel, 'Velocidade', 50)
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
@@ -945,8 +1046,8 @@ class Panel:
     def build_zone_panel(self):
         panel = self.css_class(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9), 'rgb-zone')
         heading = Gtk.Box(spacing=10)
-        heading.pack_start(self.label('VENTOINHAS ARGB', 'rgb-heading'), True, True, 0)
-        heading.pack_end(self.small_heading('ZONA DA PLACA-MÃE'), False, False, 0)
+        heading.pack_start(self.label('ZONA ARGB', 'rgb-heading'), True, True, 0)
+        heading.pack_end(self.small_heading('ZONA ENDEREÇÁVEL'), False, False, 0)
         panel.pack_start(heading, False, False, 0)
         self.zone_hint = self.label('', 'rgb-muted')
         self.zone_hint.set_line_wrap(True)
@@ -1082,7 +1183,7 @@ class Panel:
     def apply_zone_size(self, *_):
         spec = self.current_spec()
         if not spec or spec['kind'] != 'zone':
-            self.set_status('Selecione Ventoinhas ARGB para configurar essa zona', 'error')
+            self.set_status('Selecione uma zona ARGB para configurar', 'error')
             return
         self.resize_zone(spec, self.led_count.get_value_as_int())
 
@@ -1107,9 +1208,14 @@ class Panel:
                     'brightness': round(self.brightness.get_value()),
                     'speed': round(self.speed.get_value()),
                     'target': self.selected_target,
+                    'target_label': (self.current_spec()['label']
+                                     if self.current_spec() else None),
+                    'target_kind': (self.current_spec()['kind']
+                                    if self.current_spec() else None),
                 }
-                (PRESETS / (name + '.json')).write_text(
-                    json.dumps(data, indent=2), encoding='utf-8')
+                if self.current_spec() and self.current_spec()['kind'] == 'zone':
+                    data['zone_led_count'] = self.led_count.get_value_as_int()
+                write_json_atomic(PRESETS / (name + '.json'), data)
                 self.set_status(f'Cena “{name}” salva', 'good')
         dialog.destroy()
 
@@ -1133,16 +1239,51 @@ class Panel:
             return
         try:
             data = json.loads(Path(selected).read_text(encoding='utf-8'))
+            if not isinstance(data, dict):
+                raise ValueError('O arquivo da cena não contém um objeto válido.')
             color = data.get('color', '#39D353')
             if not re.fullmatch(r'#[0-9A-Fa-f]{6}', color):
                 raise ValueError('A cena tem um código de cor inválido.')
+
+            target = None
+            if data.get('target'):
+                target = self.find_saved_target(
+                    data.get('target'), data.get('target_label'), data.get('target_kind'))
+                if not target:
+                    raise ValueError('O componente salvo nesta cena não foi encontrado.')
+            else:
+                target = self.current_spec()
+            if not target:
+                raise ValueError('Selecione um componente antes de abrir esta cena.')
+
+            saved_mode = data.get('mode')
+            modes = self.common_modes(target['devices'])
+            if saved_mode:
+                mode = modes.get(str(saved_mode).casefold())
+                if not mode:
+                    raise ValueError(
+                        f"O efeito “{saved_mode}” não está disponível em {target['label']}.")
+            else:
+                mode = self.preferred_mode(target['devices'])
+            if not mode:
+                raise ValueError(f"{target['label']} não informa efeitos de iluminação.")
+
+            try:
+                brightness = max(0, min(100, int(data.get('brightness', 100))))
+                speed = max(0, min(100, int(data.get('speed', 50))))
+                zone_led_count = max(
+                    1, min(500, int(data.get(
+                        'zone_led_count', self.zone_led_count_for(target)))))
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError('Brilho, velocidade ou quantidade de LEDs inválida na cena.')
+
+            self.select_target(target['key'])
             self.sync_color(color)
-            self.brightness.set_value(data.get('brightness', 100))
-            self.speed.set_value(data.get('speed', 50))
-            if data.get('target') in self.target_specs:
-                self.select_target(data['target'])
-            if data.get('mode') and self.mode_combo.get_active_id() != data['mode']:
-                self.mode_combo.set_active_id(data['mode'])
+            self.brightness.set_value(brightness)
+            self.speed.set_value(speed)
+            if target['kind'] == 'zone':
+                self.led_count.set_value(zone_led_count)
+            self.mode_combo.set_active_id(mode)
             self.apply_current()
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
             self.set_status('Não foi possível abrir essa cena', 'error')

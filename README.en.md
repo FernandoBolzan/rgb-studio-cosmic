@@ -12,9 +12,11 @@ RGB lighting controls for the COSMIC desktop, built with GTK 3 and powered by [O
 - Pick hue and brightness by dragging across the spectrum; adjust saturation, enter a HEX value, or choose from 18 named swatches.
 - Controls brightness, speed, and effects exposed by each device.
 - Saves and restores RGB scenes.
-- Targets individual devices or an addressable motherboard zone.
+- Targets devices and addressable ARGB zones reported by OpenRGB.
 
 Choosing a color updates the preview. Hardware changes are sent only after clicking **Apply lighting**. The LED count for an ARGB zone must be entered by the user; the application cannot count the physical LEDs in a chain.
+
+Available effects depend on each device. When **All devices** or a group is selected, the list shows only modes shared by every component in that target. Select an individual component to access its specific effects. RGB Studio sends OpenRGB the exact mode name reported by the device; if a saved mode is no longer available, restoration reports the issue instead of silently switching to a different effect. Brightness and speed also depend on support from the effect and device.
 
 ## Screenshots
 
@@ -56,7 +58,7 @@ The RGB icon appears in the COSMIC status area. Choose **RGB Studio → Open ful
 
 ## Preferences and scenes
 
-Preferences are stored in `~/.config/rgb-panel/settings.json`, and scenes in `~/.config/rgb-panel/presets/`. These files stay local and are not part of the repository. After OpenRGB detects the devices, RGB Studio reapplies the last lighting configuration at startup. Preferences store the target, color, effect, brightness, speed, and the LED count for ARGB zones.
+Preferences are stored in `~/.config/rgb-panel/settings.json`, and scenes in `~/.config/rgb-panel/presets/`. These files stay local and are not part of the repository. After OpenRGB detects the devices, RGB Studio reapplies the last lighting configuration at startup. Preferences store the target, color, effect, brightness, speed, and each ARGB zone's LED count. Scenes also store the component and zone count.
 
 Preference files from older versions store only the color and LED count. On the first restore, the app applies them to **All devices**, preferring a fixed-color mode when available, with 100% brightness and 50% speed; future applications also save the target and remaining settings.
 
