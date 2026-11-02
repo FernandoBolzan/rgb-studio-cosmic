@@ -20,8 +20,8 @@
 - Legacy settings do not identify the previous target or effect; first restore defaults to all devices and fixed color.
 - The active installed source now matches this repository version.
 - Exclude the pre-existing service-unit edit from the release commit.
-- User authorized installing the fix and pushing the correction to `main`.
+- Fix is installed and pushed to `origin/main` as commit `246e7c3`.
 
 ## Next Context
 
-- Verify only intended files are staged, then commit and push to `origin/main`.
+- Future settings now preserve target and effect; the legacy settings on this machine were migrated to `target=all`.

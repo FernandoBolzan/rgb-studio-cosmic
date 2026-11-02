@@ -12,13 +12,13 @@ This file should stay small. Refresh it after substantive work or run `orquestra
 
 ## Latest Work
 
-- Entry: saved RGB configuration reapplies after device discovery; installed service verified.
+- Entry: saved RGB configuration reapplies after device discovery; installed service verified and fix published.
 - Spec: `SPECS/ACTIVE.md`
 - Changed: `rgb_panel.py`, `README.md`, `README.en.md`, `CHANGELOG.md`.
 - Verified: syntax, whitespace, and active service restoration passed; see `VERIFY.md`.
 - Risks: legacy settings do not identify target or effect and restore to all devices.
-- Next context: stage only intended files, commit, and push to `origin/main`; leave the service-unit edit unstaged.
+- Next context: observe behavior on a later full system boot; preserve the local service-unit edit.
 
 ## Recent Entries
 
-- 2026-11-02: startup restoration installed and verified locally; GitHub push pending.
+- 2026-11-02: startup restoration installed and verified locally; commit `246e7c3` pushed to `origin/main`.

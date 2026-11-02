@@ -38,6 +38,6 @@ Restore the last applied RGB configuration after RGB Studio detects hardware at 
 
 ## Status
 
-- State: installed and verified locally; GitHub push pending
+- State: installed, verified, and pushed to `origin/main` as `246e7c3`
 - Owner: Codex
 - Last updated: 2026-11-02

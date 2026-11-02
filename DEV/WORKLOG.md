@@ -11,7 +11,7 @@ Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for 
 - Why: startup loaded the saved color into the UI but never sent the configuration to OpenRGB.
 - Verified: `python3 -m py_compile rgb_panel.py`, `git diff --check`, service restart, and persisted startup state passed.
 - Risks: legacy settings lack target/effect and first restore defaults to all devices.
-- Next context: commit and push intended files; keep the service-unit user edit out of the commit.
+- Next context: commit `246e7c3` was pushed to `origin/main`; observe the behavior after a full system boot and keep the service-unit user edit local.
 
 ## Template
 

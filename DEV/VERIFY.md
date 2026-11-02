@@ -16,4 +16,5 @@
 
 - Passed: syntax and whitespace checks; the service completed the apply path and persisted the restored state.
 - Failed: none.
-- Pending: commit and push the reviewed files to `origin/main`.
+- Published: commit `246e7c3` is on `origin/main`.
+- Pending: observe restoration on a later full system boot; service restart verified the same startup path.
