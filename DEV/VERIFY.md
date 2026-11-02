@@ -22,5 +22,5 @@
 
 - Passed: regression tests; 22 Corsair mode applications; 9 sampled GPU frames; syntax and whitespace checks; installed-source equality; service restart; persisted startup state.
 - Failed: none observed.
-- Published: this memory/GPU change is pending; the earlier mode/app audit is on `origin/main` as `838ccf9`, and startup restoration is in its history as `adc6b3a`.
+- Published: memory/GPU change is on `origin/main` as `c111bab`; the earlier mode/app audit is `838ccf9`, and startup restoration is in its history as `adc6b3a`.
 - Pending: observe restoration after a full system boot; a service restart exercised the same app startup path.

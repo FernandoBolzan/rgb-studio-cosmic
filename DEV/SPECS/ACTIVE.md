@@ -37,6 +37,6 @@ Fix Corsair memory effects that failed because OpenRGB requires multiple colors,
 
 ## Status
 
-- State: implementation, hardware checks, local installation, and startup restoration verified; publication pending.
+- State: implemented, hardware checked, installed, startup restoration verified, and published to `origin/main` as `c111bab`.
 - Owner: Codex
 - Last updated: 2026-11-02
