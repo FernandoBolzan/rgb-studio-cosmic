@@ -6,6 +6,8 @@ RGB lighting controls for the COSMIC desktop, built with GTK 3 and powered by [O
 
 > Community project in development. Device and effect support depends on what the installed OpenRGB version exposes.
 
+> Current version: [**v0.1.0**](https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.0) · [changelog](CHANGELOG.md)
+
 ## Features
 
 - Detects devices supported by OpenRGB.
@@ -49,7 +51,7 @@ Some OpenRGB Linux installations require udev rules to access hardware. See the 
 ## Installation
 
 ```bash
-git clone https://github.com/FernandoBolzan/rgb-studio-cosmic.git
+git clone --branch v0.1.0 --depth 1 https://github.com/FernandoBolzan/rgb-studio-cosmic.git
 cd rgb-studio-cosmic
 install -Dm755 rgb_panel.py "$HOME/.local/share/rgb-panel/rgb_panel.py"
 install -Dm644 rgb-panel.svg "$HOME/.local/share/rgb-panel/rgb-panel.svg"

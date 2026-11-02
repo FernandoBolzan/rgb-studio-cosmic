@@ -6,6 +6,8 @@ Painel de iluminação RGB para a área de trabalho COSMIC, com interface GTK 3 
 
 > Projeto comunitário em desenvolvimento. O suporte depende dos dispositivos e modos expostos pela versão do OpenRGB instalada.
 
+> Versão atual: [**v0.1.0**](https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.0) · [histórico de alterações](CHANGELOG.md)
+
 ## Recursos
 
 - Detecta dispositivos reconhecidos pelo OpenRGB.
@@ -49,7 +51,7 @@ Em algumas instalações do OpenRGB no Linux, são necessárias regras udev para
 ## Instalação
 
 ```bash
-git clone https://github.com/FernandoBolzan/rgb-studio-cosmic.git
+git clone --branch v0.1.0 --depth 1 https://github.com/FernandoBolzan/rgb-studio-cosmic.git
 cd rgb-studio-cosmic
 install -Dm755 rgb_panel.py "$HOME/.local/share/rgb-panel/rgb_panel.py"
 install -Dm644 rgb-panel.svg "$HOME/.local/share/rgb-panel/rgb-panel.svg"
