@@ -1,13 +1,18 @@
 #!/usr/bin/python3
 """RGB Studio: desktop lighting controls for COSMIC, powered by OpenRGB."""
+import atexit
 import concurrent.futures
 import json
 import logging
+import math
 import os
 import re
 import shlex
 import shutil
+import signal
+import socket
 import subprocess
+import time
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from pathlib import Path
 
@@ -54,6 +59,23 @@ MODE_LABELS = {
     'chase rainbow pulse': 'Pulso arco-íris', 'random flicker': 'Brilho aleatório',
     'gentle transition': 'Transição suave', 'wave propagation': 'Onda expansiva',
     'wave propagation pause': 'Onda expansiva com pausa', 'red pulse': 'Pulso vermelho',
+}
+CORSAIR_DRAM_MODES = {
+    'custom': {'fixed': True, 'color_count': 1, 'speed': False, 'brightness': True},
+    'color shift': {'fixed': False, 'color_count': 2, 'speed': True, 'brightness': True},
+    'color pulse': {'fixed': False, 'color_count': 2, 'speed': True, 'brightness': True},
+    'rainbow wave': {'fixed': False, 'color_count': 0, 'speed': True, 'brightness': False},
+    'color wave': {'fixed': False, 'color_count': 2, 'speed': True, 'brightness': True},
+    'visor': {'fixed': False, 'color_count': 2, 'speed': True, 'brightness': True},
+    'rain': {'fixed': False, 'color_count': 2, 'speed': True, 'brightness': True},
+    'marquee': {'fixed': False, 'color_count': 1, 'speed': True, 'brightness': True},
+    'rainbow': {'fixed': False, 'color_count': 0, 'speed': True, 'brightness': False},
+    'sequential': {'fixed': False, 'color_count': 1, 'speed': True, 'brightness': True},
+}
+SOFTWARE_GPU_MODES = {
+    'software:blink': 'Piscar (software)',
+    'software:breathe': 'Respirar (software)',
+    'software:rainbow': 'Arco-íris (software)',
 }
 CSS = b'''
 window.rgb-window { background-color: #111613; color: #EEF4EF; font-family: "Noto Sans", sans-serif; }
@@ -104,7 +126,12 @@ def parse_devices(output):
     for line in output.splitlines():
         match = re.match(r'^(\d+): (.+)$', line)
         if match:
-            devices.append({'id': match[1], 'name': match[2], 'modes': [], 'zones': []})
+            devices.append({'id': match[1], 'name': match[2], 'type': '',
+                            'description': '', 'modes': [], 'zones': []})
+        elif devices and line.strip().startswith('Type:'):
+            devices[-1]['type'] = line.split(':', 1)[1].strip()
+        elif devices and line.strip().startswith('Description:'):
+            devices[-1]['description'] = line.split(':', 1)[1].strip()
         elif devices and line.strip().startswith('Modes:'):
             devices[-1]['modes'] = [m.strip('[]') for m in shlex.split(line.split(':', 1)[1].strip())]
         elif devices and line.strip().startswith('Zones:'):
@@ -240,6 +267,12 @@ class ColorCanvas:
 class Panel:
     def __init__(self):
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.openrgb_server_process = None
+        self.sdk_server_active = False
+        self.software_animation = None
+        self.software_timer = None
+        self.software_frame_busy = False
+        atexit.register(self.stop_openrgb_server)
         self.devices = []
         self.target_specs = {}
         self.selected_target = 'all'
@@ -263,6 +296,7 @@ class Panel:
         self.indicator.set_status(Indicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title('RGB Studio')
         self.build_menu('Procurando dispositivos…')
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit_app)
         self.refresh()
 
     def load_settings(self):
@@ -320,18 +354,275 @@ class Panel:
     def save_settings(self):
         write_json_atomic(CONFIG, self.settings)
 
-    def command(self, args):
-        result = subprocess.run(
-            [OPENRGB, '--noautoconnect', *args],
+    def run_command(self, args, sdk_client=False):
+        command = ([OPENRGB, '--client', '127.0.0.1:6742'] if sdk_client else
+                   [OPENRGB, '--noautoconnect'])
+        return subprocess.run(
+            [*command, *args],
             capture_output=True, text=True, timeout=45)
+
+    def resize_mode_colors(self, args, mode_name, count):
+        adjusted = []
+        active_mode = None
+        index = 0
+        while index < len(args):
+            item = args[index]
+            if item == '--device':
+                active_mode = None
+            if item == '--mode' and index + 1 < len(args):
+                active_mode = args[index + 1]
+            if (item == '--color' and index + 1 < len(args) and active_mode and
+                    active_mode.casefold() == mode_name.casefold()):
+                if count > 0:
+                    colors = args[index + 1].split(',')
+                    adjusted.extend([item, ','.join(self.colors_for_mode(colors[0], count))])
+                index += 2
+                continue
+            adjusted.append(item)
+            index += 1
+        return adjusted
+
+    def command(self, args, sdk_client=None):
+        if sdk_client is None:
+            sdk_client = getattr(self, 'sdk_server_active', False)
+        result = self.run_command(args, sdk_client=sdk_client)
         combined = result.stdout + result.stderr
+        color_count = re.search(
+            r'Wrong number of colors specified for mode\s+([^\r\n]+)\s*'
+            r'[\r\n]+Please provide between\s+(\d+)\s+and\s+(\d+)\s+colors?',
+            combined, re.IGNORECASE)
+        corrected = args
+        if color_count and not result.returncode:
+            mode_name = color_count.group(1).strip()
+            minimum = int(color_count.group(2))
+            corrected = self.resize_mode_colors(args, mode_name, minimum)
+            if corrected != args:
+                result = self.run_command(corrected, sdk_client=sdk_client)
+                combined = result.stdout + result.stderr
         errors = [line.strip() for line in combined.splitlines()
-                  if re.match(r'^\s*error:', line, re.IGNORECASE)]
+                  if re.match(r'^\s*error:', line, re.IGNORECASE) or
+                  re.match(r'^\s*wrong number of colors specified for mode',
+                           line, re.IGNORECASE)]
+        if color_count and corrected != args and not result.returncode and not errors:
+            logging.info('Retried OpenRGB mode %r with %s colors',
+                         color_count.group(1).strip(), minimum)
         if result.returncode or 'Connection attempt failed' in combined or errors:
             message = '\n'.join(errors) or result.stderr or result.stdout or \
                 'O OpenRGB não conseguiu aplicar o ajuste'
             raise RuntimeError(message[-1800:])
         return result.stdout
+
+    def is_corsair_dram(self, device):
+        identity = (device.get('name', '') + ' ' +
+                    device.get('description', '')).casefold()
+        return device.get('type', '').casefold() == 'dram' and 'corsair' in identity
+
+    def mode_capabilities(self, device, mode):
+        normalized = mode.casefold() if mode else ''
+        if normalized == 'off':
+            return {'fixed': False, 'color_count': 0, 'speed': False, 'brightness': False}
+        if normalized in ('direct', 'static'):
+            return {'fixed': True, 'color_count': 1, 'speed': False, 'brightness': True}
+        if self.is_corsair_dram(device) and normalized in CORSAIR_DRAM_MODES:
+            return CORSAIR_DRAM_MODES[normalized]
+        return {'fixed': False, 'color_count': None, 'speed': True, 'brightness': True}
+
+    def colors_for_mode(self, color, count):
+        base = color.upper().lstrip('#')
+        if count <= 0:
+            return []
+        colors = [base]
+        rgb = [int(base[index:index + 2], 16) for index in (0, 2, 4)]
+        for index in range(1, count):
+            shade = ''.join(f'{round(channel * (0.3 ** index)):02X}' for channel in rgb)
+            colors.append(shade)
+        return colors
+
+    def device_effect_args(self, device, color, mode, brightness, speed,
+                           zone=None, zone_size=None):
+        chosen = self.mode_for_device(device, mode)
+        if not chosen:
+            raise RuntimeError(f"{device['name']} não informa modos de iluminação.")
+        args = ['--device', device['id']]
+        if zone is not None:
+            args.extend(['--zone', str(zone)])
+            if zone_size is not None:
+                args.extend(['--size', str(zone_size)])
+        args.extend(['--mode', chosen])
+        capabilities = self.mode_capabilities(device, chosen)
+        if capabilities['fixed']:
+            args.extend(['--color', self.scaled_color(color, brightness)])
+            return args
+        color_count = capabilities['color_count']
+        if color_count is None:
+            color_count = 1
+        colors = self.colors_for_mode(color, color_count)
+        if colors:
+            args.extend(['--color', ','.join(colors)])
+        if capabilities['speed']:
+            args.extend(['--speed', str(speed)])
+        if capabilities['brightness']:
+            args.extend(['--brightness', str(brightness)])
+        return args
+
+    def ensure_sdk_server(self, expected_device=None):
+        process = getattr(self, 'openrgb_server_process', None)
+        if process and process.poll() is not None:
+            self.openrgb_server_process = None
+            process = None
+        self.sdk_server_active = False
+
+        def probe_server():
+            result = self.run_command(['--list-detailed'], sdk_client=True)
+            output = result.stdout + result.stderr
+            if (result.returncode or 'Connection attempt failed' in output or
+                    re.search(r'^\s*error:', output, re.IGNORECASE | re.MULTILINE)):
+                return False
+            if expected_device is None:
+                return bool(parse_devices(result.stdout))
+            return any(
+                device['id'] == expected_device['id'] and
+                device['name'] == expected_device['name'] and
+                device['type'].casefold() == expected_device.get('type', '').casefold()
+                for device in parse_devices(result.stdout))
+
+        try:
+            with socket.create_connection(('127.0.0.1', 6742), timeout=0.3):
+                if probe_server():
+                    self.sdk_server_active = True
+                    return True
+        except OSError:
+            if process is None:
+                self.openrgb_server_process = subprocess.Popen(
+                    [OPENRGB, '--noautoconnect', '--server'],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True)
+                process = self.openrgb_server_process
+
+        for _attempt in range(50):
+            if process and process.poll() is not None:
+                self.openrgb_server_process = None
+                raise RuntimeError('O servidor SDK do OpenRGB encerrou antes de iniciar.')
+            try:
+                with socket.create_connection(('127.0.0.1', 6742), timeout=0.3):
+                    if probe_server():
+                        self.sdk_server_active = True
+                        return True
+            except OSError:
+                pass
+            time.sleep(0.2)
+        if process:
+            self.stop_openrgb_server()
+        if expected_device:
+            raise RuntimeError(
+                f"A GPU {expected_device['name']} não apareceu no servidor SDK do OpenRGB.")
+        raise RuntimeError('Não consegui iniciar o servidor SDK do OpenRGB na porta 6742.')
+
+    def stop_openrgb_server(self):
+        process = getattr(self, 'openrgb_server_process', None)
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        self.openrgb_server_process = None
+        self.sdk_server_active = False
+
+    def stop_software_effect(self):
+        self.software_animation = None
+        timer = getattr(self, 'software_timer', None)
+        if timer:
+            GLib.source_remove(timer)
+            self.software_timer = None
+
+    def quit_app(self, *_):
+        self.stop_software_effect()
+        self.stop_openrgb_server()
+        Gtk.main_quit()
+
+    def software_effect_color(self, mode, color, brightness, speed, elapsed):
+        if mode == 'software:blink':
+            period = 2.4 - (speed / 100) * 2.0
+            factor = brightness / 100 if elapsed % period < period / 2 else 0
+            return '#' + self.scaled_color(color, round(factor * 100))
+        if mode == 'software:breathe':
+            period = 8.0 - (speed / 100) * 6.0
+            factor = (0.08 + 0.92 * (1 - math.cos(2 * math.pi * elapsed / period)) / 2)
+            return '#' + self.scaled_color(color, round(factor * brightness))
+        hue = (elapsed * (0.05 + speed * 0.0045)) % 1.0
+        rgb = hsv_to_rgb(hue, 1.0, brightness / 100)
+        return '#%02X%02X%02X' % tuple(round(channel * 255) for channel in rgb)
+
+    def start_software_effect(self, spec, color, mode, brightness, speed, quiet=False):
+        devices = spec['devices']
+        if (len(devices) != 1 or devices[0].get('type', '').casefold() != 'gpu' or
+                'direct' not in {item.casefold() for item in devices[0]['modes']}):
+            self.set_status('Efeito por software disponível para GPUs com modo Direct', 'error')
+            return
+        self.stop_software_effect()
+        device = devices[0]
+
+        def ready(_result):
+            self.software_animation = {
+                'device': device,
+                'target_key': spec['key'],
+                'target': spec['label'],
+                'mode': mode,
+                'color': color.upper(),
+                'brightness': brightness,
+                'speed': speed,
+                'started': time.monotonic(),
+                'saved': False,
+            }
+            self.software_timer = GLib.timeout_add(150, self.software_effect_frame)
+            self.set_status(f"{spec['label']} · {SOFTWARE_GPU_MODES[mode]} ativo", 'good')
+            self.build_menu('Efeito de GPU ativo')
+
+        self.submit(lambda: self.ensure_sdk_server(device), ready, quiet=quiet)
+
+    def software_effect_frame(self):
+        animation = self.software_animation
+        if not animation:
+            self.software_timer = None
+            return False
+        if self.busy or self.software_frame_busy:
+            return True
+
+        brightness = (round(self.brightness.get_value()) if hasattr(self, 'brightness')
+                      else animation['brightness'])
+        speed = (round(self.speed.get_value()) if hasattr(self, 'speed')
+                 else animation['speed'])
+        color = self.selected_color if hasattr(self, 'selected_color') else animation['color']
+        frame_color = self.software_effect_color(
+            animation['mode'], color, brightness, speed,
+            time.monotonic() - animation['started'])
+        args = ['--device', animation['device']['id'], '--mode', 'Direct',
+                '--color', frame_color.lstrip('#')]
+        self.software_frame_busy = True
+        future = self.pool.submit(self.command, args)
+        future.add_done_callback(
+            lambda result: GLib.idle_add(self.finish_software_frame, animation, result,
+                                         color, brightness, speed))
+        return True
+
+    def finish_software_frame(self, animation, future, color, brightness, speed):
+        self.software_frame_busy = False
+        if self.software_animation is not animation:
+            return False
+        try:
+            future.result()
+        except Exception:
+            logging.exception('GPU software effect failed')
+            self.stop_software_effect()
+            self.set_status('Falha no efeito de GPU', 'error')
+            return False
+        if not animation['saved']:
+            self.record_applied_configuration(
+                color, animation['target_key'], animation['mode'], brightness, speed)
+            animation['saved'] = True
+        return False
 
     def submit(self, job, done, quiet=False):
         if self.busy:
@@ -459,6 +750,11 @@ class Panel:
 
         devices = spec['devices']
         requested_mode = self.settings.get('mode')
+        if requested_mode in SOFTWARE_GPU_MODES:
+            self.start_software_effect(
+                spec, self.settings['color'], requested_mode,
+                self.settings['brightness'], self.settings['speed'], quiet=True)
+            return
         common = self.common_modes(devices)
         if requested_mode and requested_mode.casefold() not in common:
             logging.warning('Saved RGB mode %r is unavailable for target %r',
@@ -648,6 +944,8 @@ class Panel:
     def select_target(self, key):
         if key not in self.target_specs:
             return
+        if key != self.selected_target:
+            self.stop_software_effect()
         self.selected_target = key
         self._updating_targets = True
         if self.compact_target.get_active_id() != key:
@@ -685,22 +983,32 @@ class Panel:
             key=lambda mode: (mode.casefold() not in ('direct', 'static'), mode.casefold()))
         for mode in choices:
             self.mode_combo.append(mode, MODE_LABELS.get(mode.casefold(), mode))
+        software_target = (
+            len(selected) == 1 and selected[0].get('type', '').casefold() == 'gpu' and
+            'direct' in {mode.casefold() for mode in selected[0]['modes']})
+        if software_target:
+            for mode_id, label in SOFTWARE_GPU_MODES.items():
+                self.mode_combo.append(mode_id, label)
         saved_mode = (self.settings.get('mode')
                       if self.selected_target == self.settings.get('target') else None)
-        preferred = self.preferred_mode(selected, saved_mode)
+        preferred = (saved_mode if software_target and saved_mode in SOFTWARE_GPU_MODES else
+                     self.preferred_mode(selected, saved_mode))
         self.mode_combo.set_active_id(preferred or (choices[0] if choices else None))
         self.mode_combo.set_tooltip_text(
             'Mostrando apenas efeitos compatíveis com todos os dispositivos deste alvo.'
             if len(selected) > 1 else
             'Efeitos e controles disponíveis para este dispositivo, conforme o OpenRGB.')
         if not choices:
-            self.mode_hint.set_text('O OpenRGB não anunciou modos para este alvo.')
+            self._mode_hint_base = 'O OpenRGB não anunciou modos para este alvo.'
         elif len(selected) > 1:
-            self.mode_hint.set_text(
+            self._mode_hint_base = (
                 f"Exibindo efeitos comuns aos {len(selected)} dispositivos deste alvo. "
                 'Selecione um componente para ver os efeitos específicos.')
         else:
-            self.mode_hint.set_text('Efeitos anunciados pelo OpenRGB para este componente.')
+            self._mode_hint_base = 'Efeitos anunciados pelo OpenRGB para este componente.'
+        if software_target:
+            self._mode_hint_base += ' Efeitos por software exigem que o RGB Studio permaneça ativo.'
+        self.mode_hint.set_text(self._mode_hint_base)
         self.update_mode_sensitivity()
         is_zone = spec['kind'] == 'zone'
         self.zone_panel.set_visible(is_zone)
@@ -720,9 +1028,19 @@ class Panel:
         if not hasattr(self, 'brightness'):
             return
         mode = self.mode_combo.get_active_id()
-        normalized = mode.casefold() if mode else ''
-        self.brightness.set_sensitive(bool(normalized and normalized != 'off'))
-        self.speed.set_sensitive(bool(normalized and normalized not in ('direct', 'static', 'off')))
+        capabilities = [self.mode_capabilities(device, mode)
+                        for device in self.active_devices()]
+        self.brightness.set_sensitive(bool(capabilities and
+                                           all(item['brightness'] for item in capabilities)))
+        self.speed.set_sensitive(bool(capabilities and
+                                      all(item['speed'] for item in capabilities)))
+        if hasattr(self, 'mode_hint') and hasattr(self, '_mode_hint_base'):
+            hint = self._mode_hint_base
+            if any((item['color_count'] or 0) > 1 for item in capabilities):
+                hint += ' Este efeito usa uma segunda cor mais escura, derivada da cor escolhida.'
+            elif mode in SOFTWARE_GPU_MODES:
+                hint += ' O efeito é animado pelo RGB Studio e enviado pela conexão SDK do OpenRGB.'
+            self.mode_hint.set_text(hint)
 
     def apply_current(self, *_):
         spec = self.current_spec()
@@ -732,6 +1050,10 @@ class Panel:
         if not spec or not mode:
             self.set_status('Nenhum modo disponível para esse alvo', 'error')
             return
+        if mode in SOFTWARE_GPU_MODES:
+            self.start_software_effect(spec, self.selected_color, mode, brightness, speed)
+            return
+        self.stop_software_effect()
         if spec['kind'] == 'zone':
             self.apply_zone(spec, self.selected_color, mode, brightness, speed)
         else:
@@ -751,6 +1073,7 @@ class Panel:
             self.set_status('Escolha um tom HEX válido', 'error')
             return
         applied_color = color.upper()
+        self.stop_software_effect()
         self.sync_color(applied_color)
         target_ids = {device['id'] for device in devices}
         all_ids = {device['id'] for device in self.devices}
@@ -768,16 +1091,8 @@ class Panel:
         def job():
             args = []
             for device in devices:
-                chosen = self.mode_for_device(device, mode)
-                if not chosen:
-                    raise RuntimeError(f"{device['name']} não informa modos de iluminação.")
-                args.extend(['--device', device['id'], '--mode', chosen])
-                normalized = chosen.casefold()
-                if normalized in ('direct', 'static'):
-                    args.extend(['--color', self.scaled_color(color, brightness)])
-                elif normalized != 'off':
-                    args.extend(['--color', color.lstrip('#'), '--speed', str(speed),
-                                 '--brightness', str(brightness)])
+                args.extend(self.device_effect_args(
+                    device, color, mode, brightness, speed))
             if not args:
                 raise RuntimeError('O modo selecionado não está disponível nesses dispositivos.')
             return self.command(args)
@@ -793,6 +1108,7 @@ class Panel:
         if not re.fullmatch(r'#[0-9A-F]{6}', color.upper()):
             self.set_status('Escolha um tom HEX válido', 'error')
             return
+        self.stop_software_effect()
         device = spec['device']
         zone = spec['zone_index']
         count = (self.led_count.get_value_as_int()
@@ -800,17 +1116,8 @@ class Panel:
                  else self.zone_led_count_for(spec))
 
         def job():
-            chosen = self.mode_for_device(device, mode)
-            if not chosen:
-                raise RuntimeError(f"{device['name']} não informa modos de iluminação.")
-            normalized = chosen.casefold()
-            args = ['--device', device['id'], '--zone', str(zone), '--size', str(count),
-                    '--mode', chosen]
-            if normalized in ('direct', 'static'):
-                args += ['--color', self.scaled_color(color, brightness)]
-            elif normalized != 'off':
-                args += ['--color', color.lstrip('#'), '--speed', str(speed),
-                         '--brightness', str(brightness)]
+            args = self.device_effect_args(
+                device, color, mode, brightness, speed, zone=zone, zone_size=count)
             return self.command(args)
 
         def complete(_result):
@@ -1027,8 +1334,9 @@ class Panel:
         self.mode_hint = self.label('', 'rgb-muted')
         self.mode_hint.set_line_wrap(True)
         panel.pack_start(self.mode_hint, False, False, 0)
-        self.brightness = self.scale_row(panel, 'Brilho', 100)
-        self.speed = self.scale_row(panel, 'Velocidade', 50)
+        self.brightness = self.scale_row(
+            panel, 'Brilho', self.settings.get('brightness', 100))
+        self.speed = self.scale_row(panel, 'Velocidade', self.settings.get('speed', 50))
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         panel.pack_start(separator, False, False, 2)
         panel.pack_start(self.small_heading('CENAS'), False, False, 0)
@@ -1258,7 +1566,13 @@ class Panel:
 
             saved_mode = data.get('mode')
             modes = self.common_modes(target['devices'])
-            if saved_mode:
+            supports_software_mode = (
+                saved_mode in SOFTWARE_GPU_MODES and len(target['devices']) == 1 and
+                target['devices'][0].get('type', '').casefold() == 'gpu' and
+                'direct' in {item.casefold() for item in target['devices'][0]['modes']})
+            if supports_software_mode:
+                mode = saved_mode
+            elif saved_mode:
                 mode = modes.get(str(saved_mode).casefold())
                 if not mode:
                     raise ValueError(
@@ -1336,7 +1650,7 @@ class Panel:
         refresh.connect('activate', self.refresh)
         menu.append(refresh)
         quit_item = Gtk.MenuItem(label='Sair do RGB Studio')
-        quit_item.connect('activate', Gtk.main_quit)
+        quit_item.connect('activate', self.quit_app)
         menu.append(quit_item)
         menu.show_all()
         self.indicator.set_menu(menu)

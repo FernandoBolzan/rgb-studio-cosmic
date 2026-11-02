@@ -11,6 +11,8 @@
 - Device IDs, mode names, and zone names come from `openrgb --list-detailed`.
 - A device target exposes that device's modes. A group target exposes the case-insensitive intersection so a chosen effect is valid for every device in the group.
 - OpenRGB remains the capability authority. Device support, mode controls, and hardware access vary by controller and installed OpenRGB version.
+- Corsair DRAM has a focused capability table because five advertised modes require two colors. RGB Studio derives a darker secondary shade from the chosen color before applying those modes.
+- GPUs that advertise Direct/Off can use software Blink, Breathe, and Rainbow. RGB Studio starts the local OpenRGB SDK server on demand, waits until the selected GPU appears in its device list, then sends Direct-color frames through the SDK client. The app must remain running for the animation; its server child is stopped when the app exits.
 - ARGB targets are created for device-reported zones whose names contain `ARGB` or `addressable`; the LED count is user supplied and stored per zone.
 
 ## Local state
@@ -21,5 +23,5 @@
 
 ## Boundaries and follow-up
 
-- The app does not directly use the OpenRGB SDK today; all hardware access crosses the CLI boundary.
+- Most hardware access crosses the OpenRGB CLI boundary; software GPU animations use the CLI's SDK-client mode and a local SDK server.
 - Product categorization still uses device-name substrings, and the large GTK/controller module is not yet split. See `APP_AUDIT.md` for prioritized follow-up work.

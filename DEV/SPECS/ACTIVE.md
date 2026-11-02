@@ -1,48 +1,42 @@
-# Active Spec - rgb-panel
+# Active Spec - RGB lighting reliability
 
 ## Goal
 
-Review and improve RGB Studio's lighting-mode reliability and overall device/scene handling, then install and publish the reviewed correction to `main`.
+Fix Corsair memory effects that failed because OpenRGB requires multiple colors, add usable blink-style effects for the Palit GPU, and install and publish the verified change to `main`.
 
-## In Scope
+## Scope
 
-- Resolve mode names case-insensitively while preserving each device's advertised spelling.
-- Stop silently replacing unsupported effects; report CLI failures even when OpenRGB exits successfully.
-- Explain common-mode filtering for grouped targets and expose each device's advertised modes.
-- Discover all reported addressable ARGB zones and store LED counts per zone.
-- Preserve target and zone count in scenes; reject stale target or mode references.
-- Make settings and scene JSON writes atomic.
-- Review repository history, issues, pull requests, and OpenRGB CLI behavior; record findings and follow-on improvements.
-- Install the verified app and publish the code/docs correction to `origin/main`, excluding the pre-existing service edit.
-
-## Out Of Scope
-
-- Cycling effects on physical hardware during verification.
-- Implementing the longer-term backlog in `DEV/APP_AUDIT.md` (SDK capability discovery, test/CI suite, module split, or packaging).
+- Supply the advertised color count for each Corsair DRAM mode, deriving a dark secondary color when two are required.
+- Add software Blink, Breathe, and Rainbow effects to GPUs that expose Direct/Off only.
+- Wait until the target GPU is visible to the OpenRGB SDK client before starting animation frames.
+- Keep the current saved memory target and Color Pulse configuration after tests.
+- Add focused regression tests and update user/developer documentation.
+- Install the app, restart and verify the user service, then publish intended code/docs to `origin/main`, excluding the pre-existing service-unit edit.
 
 ## Acceptance
 
-- Advertised mode names match regardless of capitalization and the device-native name reaches OpenRGB.
-- A selected mode unsupported by any device in its target fails clearly without silently choosing another mode.
-- Grouped targets show common effects; individual device and ARGB zone targets show their respective advertised effects.
-- Each detected addressable zone has an independent remembered LED count, and existing global zone-count settings remain readable.
-- Scenes restore their component, effect, and zone count; stale component/effect references produce an actionable error.
-- Syntax and whitespace checks pass, the local service runs the installed source, and the published commit excludes `contrib/rgb-panel.service`.
+- All 11 modes advertised by each Corsair DIMM accept the selected color and supported controls without OpenRGB errors.
+- GPU Blink, Breathe, and Rainbow frame updates reach the selected GPU via the SDK; starting before GPU discovery does not fail silently.
+- Software effects are labeled as app-driven and require RGB Studio to remain active.
+- The saved memory target/mode/color remain intact after physical tests and service restart reapplies that state.
+- Regression tests, syntax, and whitespace checks pass; installed source matches repository source; service is active and enabled.
+- The published `main` commit contains only intended app, test, and documentation files.
 
 ## Constraints
 
-- Preserve the existing uncommitted edit in `contrib/rgb-panel.service` (`Restart=always`).
-- No automated test suite exists; do not run effect sweeps against the hardware.
+- Preserve the pre-existing uncommitted `contrib/rgb-panel.service` edit (`Restart=always`); do not stage or install it as part of this change.
+- Physical mode tests visibly change lighting; restore both DIMMs and the GPU to the user's green configuration afterward.
 
 ## Verification Plan
 
-- Run `python3 -m py_compile rgb_panel.py` and `git diff --check`.
-- Review the final diff and confirm the installed source matches the repository source.
-- Restart the user service and confirm it completes the saved-configuration apply path.
-- Confirm only intended source/docs files are included in the `main` update.
+- Run `/usr/bin/python3 -m unittest discover -s tests -v`, `/usr/bin/python3 -m py_compile rgb_panel.py tests/test_rgb_panel_modes.py`, and `git diff --check`.
+- Test the Corsair effects on both DIMMs and send multiple generated frames for each GPU software mode through a verified SDK connection.
+- Restore two DIMMs to Color Pulse green and GPU to Direct green; confirm saved settings still target memory.
+- Install current source, restart the user service, and verify active/enabled status, restore logs/state, and installed-source hash.
+- Confirm the staged diff excludes `contrib/rgb-panel.service`; commit and push the implementation to `origin/main`.
 
 ## Status
 
-- State: implemented, syntax-checked, installed, service-verified, and published to `origin/main` as `838ccf9`; full-boot observation remains.
+- State: implementation, hardware checks, local installation, and startup restoration verified; publication pending.
 - Owner: Codex
 - Last updated: 2026-11-02

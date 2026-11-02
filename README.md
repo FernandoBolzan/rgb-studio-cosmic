@@ -13,10 +13,14 @@ Painel de iluminação RGB para a área de trabalho COSMIC, com interface GTK 3 
 - Controla brilho, velocidade e efeitos que o dispositivo disponibiliza.
 - Salva e recupera cenas RGB.
 - Permite selecionar dispositivos e as zonas ARGB endereçáveis anunciadas pelo OpenRGB.
+- Envia a quantidade correta de cores para os modos dos módulos Corsair Vengeance RGB.
+- Oferece Piscar, Respirar e Arco-íris por software em GPUs que só anunciam Direct/Off no OpenRGB.
 
 A seleção de cor atualiza a prévia. A iluminação só é enviada ao hardware quando você clica em **Aplicar iluminação**. A quantidade de LEDs de uma zona ARGB precisa ser informada pelo usuário; o aplicativo não consegue contar os LEDs físicos da cadeia.
 
 Os efeitos disponíveis dependem de cada dispositivo. Ao selecionar **Todo o sistema** ou um grupo, a lista mostra somente os modos comuns a todos os componentes do alvo. Selecione um componente individual para acessar os efeitos específicos dele. O RGB Studio envia ao OpenRGB o nome exato do modo anunciado pelo dispositivo; se um modo salvo deixar de existir, a restauração informa o problema em vez de trocar silenciosamente para outro efeito. Brilho e velocidade também dependem do suporte do efeito e do dispositivo.
+
+Em módulos Corsair Vengeance RGB, os efeitos de duas cores recebem uma segunda tonalidade mais escura derivada da cor escolhida. Para GPUs que oferecem apenas **Direct** e **Off**, o RGB Studio disponibiliza **Piscar**, **Respirar** e **Arco-íris** por software; mantenha o RGB Studio aberto enquanto esses efeitos estiverem ativos.
 
 ## Capturas de tela
 
@@ -66,6 +70,7 @@ Arquivos de preferências de versões antigas guardam apenas a cor e a quantidad
 
 ```bash
 python3 -m py_compile rgb_panel.py
+python3 -m unittest discover -s tests -v
 ```
 
 Contribuições são bem-vindas. Leia [CONTRIBUTING.md](CONTRIBUTING.md) antes de abrir uma solicitação.

@@ -13,10 +13,14 @@ RGB lighting controls for the COSMIC desktop, built with GTK 3 and powered by [O
 - Controls brightness, speed, and effects exposed by each device.
 - Saves and restores RGB scenes.
 - Targets devices and addressable ARGB zones reported by OpenRGB.
+- Sends the right number of colors for Corsair Vengeance RGB memory modes.
+- Adds software Blink, Breathe, and Rainbow effects for GPUs that only expose Direct/Off in OpenRGB.
 
 Choosing a color updates the preview. Hardware changes are sent only after clicking **Apply lighting**. The LED count for an ARGB zone must be entered by the user; the application cannot count the physical LEDs in a chain.
 
 Available effects depend on each device. When **All devices** or a group is selected, the list shows only modes shared by every component in that target. Select an individual component to access its specific effects. RGB Studio sends OpenRGB the exact mode name reported by the device; if a saved mode is no longer available, restoration reports the issue instead of silently switching to a different effect. Brightness and speed also depend on support from the effect and device.
+
+For Corsair Vengeance RGB memory, two-color modes receive a darker secondary shade derived from the selected color. For GPUs that only expose **Direct** and **Off**, RGB Studio adds software **Blink**, **Breathe**, and **Rainbow** effects; keep RGB Studio running while one of these effects is active.
 
 ## Screenshots
 
@@ -66,6 +70,7 @@ Preference files from older versions store only the color and LED count. On the 
 
 ```bash
 python3 -m py_compile rgb_panel.py
+python3 -m unittest discover -s tests -v
 ```
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.

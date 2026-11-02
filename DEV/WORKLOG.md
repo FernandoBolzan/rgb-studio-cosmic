@@ -4,6 +4,15 @@ Record a short summary here after substantive work.
 
 Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for older entries after compaction.
 
+## 2026-11-02 - Corsair DRAM and GPU effects
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: Corsair per-mode color counts; software GPU Blink/Breathe/Rainbow and SDK readiness; regression tests; bilingual docs.
+- Why: the memory controller rejected one-color payloads for five modes; the Palit GPU exposes only Direct/Off natively.
+- Verified: 3 unit tests passed; both DIMMs accepted all 11 modes; GPU accepted sampled frames for all three effects; hardware restored to green memory Color Pulse and GPU Direct.
+- Risks: software GPU effects require RGB Studio to remain running; support varies with OpenRGB and controller versions.
+- Next context: install current source, restart service to verify saved memory restore, refresh `VERIFY.md`/`HANDOFF.md`, then publish intended paths only; preserve the service-unit edit.
+
 ## 2026-11-02 - Mode handling and app audit
 
 - Spec: `DEV/SPECS/ACTIVE.md`

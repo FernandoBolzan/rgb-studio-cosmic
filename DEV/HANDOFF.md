@@ -12,12 +12,12 @@ This file should stay small. Refresh it after substantive work or run `orquestra
 
 ## Latest Work
 
-- Entry: mode and scene handling reviewed; per-device modes and ARGB zones improved; local install verified.
+- Entry: Corsair DRAM effects now send the required color count; Palit GPU gets software Blink/Breathe/Rainbow.
 - Spec: `SPECS/ACTIVE.md`
-- Changed: `rgb_panel.py`, both READMEs, `CHANGELOG.md`, and app audit/architecture notes.
-- Verified: syntax, whitespace, installed-source SHA, service active/enabled, and saved-state rewrite; see `VERIFY.md`.
-- Risks: device support still depends on OpenRGB; no automated test suite or physical effect sweep.
-- Next context: observe restoration after a full system boot and preserve the local service-unit edit; see `APP_AUDIT.md` for future improvements.
+- Changed: `rgb_panel.py`, regression tests, both READMEs, `CHANGELOG.md`, and app audit/architecture notes.
+- Verified: 4 unit tests; both DIMMs across 11 modes; generated frames for all 3 GPU effects through SDK; hardware restored to green; installed hash and service startup restore verified. See `VERIFY.md`.
+- Risks: software GPU effects require RGB Studio to remain active; hardware behavior depends on OpenRGB and controller versions.
+- Next context: publish intended code/test/docs paths to `origin/main`; preserve the pre-existing local service-unit edit.
 
 ## Recent Entries
 

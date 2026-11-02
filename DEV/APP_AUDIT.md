@@ -15,16 +15,24 @@
 4. **Only the first motherboard ARGB zone was exposed.** All device-reported zones whose names contain “ARGB” or “addressable” are now selectable, and each device also receives an individual target.
 5. **ARGB sizes were shared globally and omitted from scenes.** LED counts are stored per zone, with the old global setting retained as a migration fallback. Scenes now preserve the target identity and zone count, reject unavailable targets/effects, and clamp numeric values to supported ranges.
 6. **Interrupted JSON writes could truncate settings or scenes.** Settings and scenes now replace their files atomically.
+7. **Corsair DRAM modes were missing required colors.** Color Shift, Color Pulse, Color Wave, Visor, and Rain require two colors; the CLI warning can exit successfully. RGB Studio now supplies a darker second shade, and a retry handles OpenRGB's color-count warning.
+8. **The Palit GPU only exposes Direct and Off.** RGB Studio now offers software Blink, Breathe, and Rainbow. It waits for the selected GPU to appear in the SDK device list before starting frames, preventing a startup race while OpenRGB scans hardware.
+
+## Hardware verification
+
+- Both Corsair memory modules were exercised through all 11 advertised modes; each command completed without an OpenRGB error.
+- The Palit GeForce RTX 3060 accepted Blink, Breathe, and Rainbow frame updates through the SDK client. The GPU was restored to Direct green, and both memory modules were restored to green Color Pulse.
+- Regression tests cover the color counts and generated animation frames; see `DEV/VERIFY.md` for the current run.
 
 ## Remaining improvement backlog
 
 ### P1 — mode capability discovery
 
-OpenRGB's basic device listing does not give RGB Studio a complete capability matrix for every mode's color, speed, and brightness controls. The UI currently disables controls for fixed/off modes and sends dynamic controls for other modes. A future SDK-backed capability query should drive these controls per effect and show clear unsupported-control feedback.
+OpenRGB's basic device listing does not give RGB Studio a complete capability matrix for every mode's color, speed, and brightness controls. The UI has focused metadata for Corsair DRAM, but other controllers still use generic dynamic controls. A broader capability query should drive these controls per effect and show clear unsupported-control feedback.
 
 ### P1 — automated regression coverage and CI
 
-There is no test suite or CI workflow. Add isolated tests for device-list parsing, case-insensitive mode intersection, device-native mode resolution, target restoration after device reordering, scene validation, and per-zone migration. Run them without physical RGB hardware; add a CI syntax/build gate.
+The initial regression suite covers Corsair color counts and generated GPU frames. Extend it with isolated tests for device-list parsing, case-insensitive mode intersection, device-native mode resolution, target restoration after device reordering, scene validation, and per-zone migration; add a CI syntax/build gate.
 
 ### P2 — stable device identity and classification
 
@@ -44,4 +52,4 @@ Add a dependency manifest or distro package metadata, document supported Python/
 
 ## Limits
 
-No effect sweep was run against physical devices because it would visibly change their lighting. Device behavior remains bounded by the modes and capabilities OpenRGB reports. The reviewed source is installed locally and published to `origin/main` as `838ccf9`; the service restart completed as recorded in `VERIFY.md`.
+Device behavior remains bounded by the modes and capabilities OpenRGB reports. These tests used the current local OpenRGB 1.1 build and hardware; they do not establish compatibility with every controller or OpenRGB release.
