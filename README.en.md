@@ -56,7 +56,9 @@ The RGB icon appears in the COSMIC status area. Choose **RGB Studio → Open ful
 
 ## Preferences and scenes
 
-Preferences are stored in `~/.config/rgb-panel/settings.json`, and scenes in `~/.config/rgb-panel/presets/`. These files stay local and are not part of the repository.
+Preferences are stored in `~/.config/rgb-panel/settings.json`, and scenes in `~/.config/rgb-panel/presets/`. These files stay local and are not part of the repository. After OpenRGB detects the devices, RGB Studio reapplies the last lighting configuration at startup. Preferences store the target, color, effect, brightness, speed, and the LED count for ARGB zones.
+
+Preference files from older versions store only the color and LED count. On the first restore, the app applies them to **All devices**, preferring a fixed-color mode when available, with 100% brightness and 50% speed; future applications also save the target and remaining settings.
 
 ## Development
 

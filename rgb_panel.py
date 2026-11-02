@@ -234,8 +234,11 @@ class Panel:
         self.target_specs = {}
         self.selected_target = 'all'
         self.busy = False
+        self.startup_restore_started = False
+        self.startup_restore_attempts = 0
         self.window = None
         self.settings = self.load_settings()
+        self.selected_target = self.settings.get('target') or 'all'
         self.selected_color = self.settings.get('color', '#39D353')
         self._syncing_color = False
         self._laying_out = None
@@ -253,15 +256,44 @@ class Panel:
         self.refresh()
 
     def load_settings(self):
+        defaults = {
+            'zone_led_count': DEFAULT_ZONE_LEDS,
+            'color': '#39D353',
+            'target': None,
+            'target_label': None,
+            'target_kind': None,
+            'mode': None,
+            'brightness': 100,
+            'speed': 50,
+            'restore_on_startup': False,
+        }
         try:
             data = json.loads(CONFIG.read_text(encoding='utf-8'))
             count = int(data.get('zone_led_count', DEFAULT_ZONE_LEDS))
             color = str(data.get('color', '#39D353')).upper()
             if not re.fullmatch(r'#[0-9A-F]{6}', color):
                 color = '#39D353'
-            return {'zone_led_count': max(1, min(500, count)), 'color': color}
+            target = data.get('target')
+            target_label = data.get('target_label')
+            target_kind = data.get('target_kind')
+            mode = data.get('mode')
+            restore_on_startup = data.get('restore_on_startup', 'color' in data)
+            if not isinstance(restore_on_startup, bool):
+                restore_on_startup = 'color' in data
+            return {
+                'zone_led_count': max(1, min(500, count)),
+                'color': color,
+                'target': target if isinstance(target, str) else None,
+                'target_label': target_label if isinstance(target_label, str) else None,
+                'target_kind': target_kind if isinstance(target_kind, str) else None,
+                'mode': mode if isinstance(mode, str) else None,
+                'brightness': max(0, min(100, int(data.get('brightness', 100)))),
+                'speed': max(0, min(100, int(data.get('speed', 50)))),
+                # Old settings files contain a color written only after applying it.
+                'restore_on_startup': restore_on_startup,
+            }
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return {'zone_led_count': DEFAULT_ZONE_LEDS, 'color': '#39D353'}
+            return defaults
 
     def save_settings(self):
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
@@ -277,30 +309,46 @@ class Panel:
                                 'O OpenRGB não conseguiu aplicar o ajuste')[-1800:])
         return result.stdout
 
-    def submit(self, job, done):
+    def submit(self, job, done, quiet=False):
         if self.busy:
             return
         self.busy = True
         self.set_status('Aplicando…', 'pending')
         self.set_busy_controls(True)
         future = self.pool.submit(job)
-        future.add_done_callback(lambda result: GLib.idle_add(self.finish, result, done))
+        future.add_done_callback(
+            lambda result: GLib.idle_add(self.finish, result, done, quiet))
 
-    def finish(self, future, done):
+    def finish(self, future, done, quiet=False):
         self.busy = False
         self.set_busy_controls(False)
+        menu_status = 'Pronto'
         try:
             done(future.result())
+            if quiet:
+                menu_status = 'Configuração reaplicada'
         except Exception as error:
             logging.exception('RGB action failed')
             self.set_status('Falha ao aplicar', 'error')
-            dialog = Gtk.MessageDialog(
-                transient_for=self.window, modal=True, message_type=Gtk.MessageType.ERROR,
-                buttons=Gtk.ButtonsType.CLOSE, text='Não consegui aplicar esse ajuste')
-            dialog.format_secondary_text(str(error))
-            dialog.connect('response', lambda box, _response: box.destroy())
-            dialog.show_all()
-        self.build_menu('Pronto' if not self.busy else 'Aplicando…')
+            if quiet:
+                if self.startup_restore_attempts < 3:
+                    GLib.timeout_add_seconds(5, self.retry_startup_restore)
+                    menu_status = 'Tentando restaurar…'
+                else:
+                    logging.error('Could not restore saved RGB settings after three attempts')
+                    menu_status = 'Falha ao restaurar'
+            else:
+                dialog = Gtk.MessageDialog(
+                    transient_for=self.window, modal=True, message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.CLOSE, text='Não consegui aplicar esse ajuste')
+                dialog.format_secondary_text(str(error))
+                dialog.connect('response', lambda box, _response: box.destroy())
+                dialog.show_all()
+        self.build_menu(menu_status if not self.busy else 'Aplicando…')
+        return False
+
+    def retry_startup_restore(self):
+        self.restore_saved_configuration()
         return False
 
     def refresh(self, *_):
@@ -316,6 +364,88 @@ class Panel:
         self.set_status(
             f'{len(devices)} dispositivos encontrados' if devices else 'Nenhum dispositivo RGB detectado',
             'good' if devices else 'error')
+        if (devices and self.settings.get('restore_on_startup') and
+                not self.startup_restore_started):
+            self.startup_restore_started = True
+            self.restore_saved_configuration()
+
+    def preferred_mode(self, devices, requested=None):
+        if not devices:
+            return None
+        common_modes = set(devices[0]['modes'])
+        for device in devices[1:]:
+            common_modes &= set(device['modes'])
+        if requested in common_modes:
+            return requested
+        return next((mode for mode in ('Direct', 'Static') if mode in common_modes),
+                    next(iter(sorted(common_modes)), None))
+
+    def target_for_devices(self, devices, preferred=None):
+        device_ids = {device['id'] for device in devices}
+        if preferred in self.target_specs:
+            preferred_ids = {
+                device['id'] for device in self.target_specs[preferred]['devices']
+            }
+            if preferred_ids == device_ids:
+                return preferred
+        for key, spec in self.target_specs.items():
+            if spec['kind'] == 'zone':
+                continue
+            if {device['id'] for device in spec['devices']} == device_ids:
+                return key
+        if len(device_ids) == 1:
+            key = f'device:{next(iter(device_ids))}'
+            if key in self.target_specs:
+                return key
+        return None
+
+    def restore_saved_configuration(self):
+        if not self.devices or self.startup_restore_attempts >= 3:
+            return
+        self.startup_restore_attempts += 1
+
+        target_key = self.settings.get('target') or 'all'
+        spec = self.target_specs.get(target_key)
+        if not spec and self.settings.get('target_label'):
+            matches = [candidate for candidate in self.target_specs.values()
+                       if candidate['label'] == self.settings['target_label'] and
+                       candidate['kind'] == self.settings.get('target_kind')]
+            if len(matches) == 1:
+                spec = matches[0]
+                target_key = spec['key']
+        if not spec:
+            logging.warning('Saved RGB target %r is unavailable; skipping startup restore',
+                            target_key)
+            self.set_status('O componente salvo não foi encontrado', 'error')
+            return
+
+        devices = spec['devices']
+        mode = self.preferred_mode(devices, self.settings.get('mode'))
+        color = self.settings['color']
+        brightness = self.settings['brightness']
+        speed = self.settings['speed']
+        if spec['kind'] == 'zone':
+            self.apply_zone(spec, color, mode, brightness, speed, quiet=True)
+        else:
+            self.apply_devices(devices, color, mode, brightness, speed,
+                               target_key=target_key, quiet=True)
+
+    def record_applied_configuration(self, color, target_key, mode, brightness,
+                                     speed, zone_led_count=None):
+        spec = self.target_specs.get(target_key)
+        self.settings.update({
+            'color': color.upper(),
+            'target': target_key,
+            'target_label': spec['label'] if spec else None,
+            'target_kind': spec['kind'] if spec else None,
+            'mode': mode,
+            'brightness': brightness,
+            'speed': speed,
+            'restore_on_startup': True,
+        })
+        if zone_led_count is not None:
+            self.settings['zone_led_count'] = zone_led_count
+        self.save_settings()
 
     def make_targets(self):
         specs = {
@@ -393,7 +523,7 @@ class Panel:
     def rebuild_targets(self):
         specs, order = self.make_targets()
         self.target_specs = specs
-        if self.selected_target not in specs:
+        if self.selected_target not in specs and self.detected:
             self.selected_target = 'all'
         if not self.window:
             return
@@ -512,13 +642,15 @@ class Panel:
         if spec['kind'] == 'zone':
             self.apply_zone(spec, self.selected_color, mode, brightness, speed)
         else:
-            self.apply_devices(spec['devices'], self.selected_color, mode, brightness, speed)
+            self.apply_devices(spec['devices'], self.selected_color, mode, brightness,
+                               speed, target_key=self.selected_target)
 
     def scaled_color(self, color, brightness):
         values = [round(int(color[i:i+2], 16) * brightness / 100) for i in (1, 3, 5)]
         return ''.join(f'{value:02X}' for value in values)
 
-    def apply_devices(self, devices, color, mode, brightness, speed):
+    def apply_devices(self, devices, color, mode, brightness, speed, target_key=None,
+                      quiet=False):
         if not devices:
             self.set_status('Nenhum dispositivo RGB detectado', 'error')
             return
@@ -529,8 +661,9 @@ class Panel:
         self.sync_color(applied_color)
         target_ids = {device['id'] for device in devices}
         all_ids = {device['id'] for device in self.devices}
-        spec = self.current_spec()
-        if spec and target_ids == {device['id'] for device in spec['devices']}:
+        target_key = self.target_for_devices(devices, target_key)
+        spec = self.target_specs.get(target_key)
+        if spec:
             target = spec['label']
         elif target_ids == all_ids:
             target = 'Todo o sistema'
@@ -559,18 +692,20 @@ class Panel:
             return self.command(args)
 
         def complete(_result):
-            self.settings['color'] = applied_color
-            self.save_settings()
+            self.record_applied_configuration(
+                applied_color, target_key, self.preferred_mode(devices, mode),
+                brightness, speed)
             self.set_status(f"{target} · {applied_color} aplicado", 'good')
-        self.submit(job, complete)
+        self.submit(job, complete, quiet=quiet)
 
-    def apply_zone(self, spec, color, mode, brightness, speed):
+    def apply_zone(self, spec, color, mode, brightness, speed, quiet=False):
         if not re.fullmatch(r'#[0-9A-F]{6}', color.upper()):
             self.set_status('Escolha um tom HEX válido', 'error')
             return
         device = spec['device']
         zone = spec['zone_index']
-        count = self.led_count.get_value_as_int()
+        count = (self.led_count.get_value_as_int() if hasattr(self, 'led_count') else
+                 self.settings.get('zone_led_count', DEFAULT_ZONE_LEDS))
 
         def job():
             args = ['--device', device['id'], '--zone', str(zone), '--size', str(count),
@@ -583,11 +718,10 @@ class Panel:
             return self.command(args)
 
         def complete(_result):
-            self.settings['zone_led_count'] = count
-            self.settings['color'] = color.upper()
-            self.save_settings()
+            self.record_applied_configuration(
+                color, spec['key'], mode, brightness, speed, zone_led_count=count)
             self.set_status(f'Ventoinhas: tom aplicado na zona de {count} LEDs', 'good')
-        self.submit(job, complete)
+        self.submit(job, complete, quiet=quiet)
 
     def resize_zone(self, spec, count):
         device, zone = spec['device'], spec['zone_index']

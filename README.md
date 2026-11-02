@@ -56,7 +56,9 @@ O ícone RGB aparece na área de indicadores do COSMIC. Abra **RGB Studio → Ab
 
 ## Preferências e cenas
 
-As preferências ficam em `~/.config/rgb-panel/settings.json`, e as cenas em `~/.config/rgb-panel/presets/`. Esses arquivos são locais e não fazem parte do repositório.
+As preferências ficam em `~/.config/rgb-panel/settings.json`, e as cenas em `~/.config/rgb-panel/presets/`. Esses arquivos são locais e não fazem parte do repositório. Depois que o OpenRGB detecta os dispositivos, o RGB Studio reaplica a última iluminação configurada ao iniciar. A preferência guarda o alvo, a cor, o efeito, o brilho, a velocidade e, para zonas ARGB, a quantidade de LEDs.
+
+Arquivos de preferências de versões antigas guardam apenas a cor e a quantidade de LEDs. Na primeira restauração, esses arquivos são aplicados a **Todo o sistema**, priorizando um modo de cor fixa quando disponível, com brilho em 100% e velocidade em 50%; depois, a aplicação salva também o alvo e os demais ajustes.
 
 ## Desenvolvimento
 
