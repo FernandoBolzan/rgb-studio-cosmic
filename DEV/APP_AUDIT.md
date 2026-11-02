@@ -44,4 +44,4 @@ Add a dependency manifest or distro package metadata, document supported Python/
 
 ## Limits
 
-No effect sweep was run against physical devices because it would visibly change their lighting. Device behavior remains bounded by the modes and capabilities OpenRGB reports. The reviewed source is installed locally and the service restart completed; publication is tracked in `VERIFY.md`.
+No effect sweep was run against physical devices because it would visibly change their lighting. Device behavior remains bounded by the modes and capabilities OpenRGB reports. The reviewed source is installed locally and published to `origin/main` as `838ccf9`; the service restart completed as recorded in `VERIFY.md`.

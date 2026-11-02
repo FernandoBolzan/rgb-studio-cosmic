@@ -11,7 +11,7 @@ Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for 
 - Why: supported effects could be hidden or silently replaced; scenes could lose target/zone context; the first ARGB zone was the only one exposed.
 - Verified: `python3 -m py_compile rgb_panel.py`, `git diff --check`, installed source SHA matches, service active/enabled and startup settings rewritten.
 - Risks: no automated tests; effect capabilities and support remain OpenRGB/device-specific; no physical effect sweep.
-- Next context: publish intended files to `origin/main` without staging `contrib/rgb-panel.service`; observe behavior on a full boot.
+- Next context: commit `838ccf9` is on `origin/main`; observe restoration after a full boot and keep the local service-unit change uncommitted.
 
 ## 2026-11-02 - Restore saved RGB settings on startup
 

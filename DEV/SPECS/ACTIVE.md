@@ -43,6 +43,6 @@ Review and improve RGB Studio's lighting-mode reliability and overall device/sce
 
 ## Status
 
-- State: implemented, syntax-checked, installed, and service-verified locally; publish operation in progress.
+- State: implemented, syntax-checked, installed, service-verified, and published to `origin/main` as `838ccf9`; full-boot observation remains.
 - Owner: Codex
 - Last updated: 2026-11-02

@@ -17,8 +17,9 @@ This file should stay small. Refresh it after substantive work or run `orquestra
 - Changed: `rgb_panel.py`, both READMEs, `CHANGELOG.md`, and app audit/architecture notes.
 - Verified: syntax, whitespace, installed-source SHA, service active/enabled, and saved-state rewrite; see `VERIFY.md`.
 - Risks: device support still depends on OpenRGB; no automated test suite or physical effect sweep.
-- Next context: publish the reviewed code/docs to `origin/main`, excluding the local service-unit edit; observe restoration after a full boot.
+- Next context: observe restoration after a full system boot and preserve the local service-unit edit; see `APP_AUDIT.md` for future improvements.
 
 ## Recent Entries
 
 - 2026-11-02: startup restoration fix and documentation are on `origin/main` as `adc6b3a`.
+- 2026-11-02: mode and scene reliability review installed locally and published as `838ccf9`; local service-unit edit remains uncommitted.

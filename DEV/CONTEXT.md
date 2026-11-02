@@ -20,6 +20,7 @@
 - Legacy settings do not identify the previous target or effect; first restore defaults to all devices and fixed color.
 - The current mode/scene improvements are installed at `~/.local/share/rgb-panel/rgb_panel.py`; its SHA-256 matches the repository source.
 - The user service is active and enabled after restart, with no systemd restarts reported.
+- Mode and scene improvements were pushed to `origin/main` in commit `838ccf9`.
 - Exclude the pre-existing service-unit edit from any publish operation.
 - No project issues or pull requests were open/listed when checked on 2026-11-02.
 
