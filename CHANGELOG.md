@@ -7,6 +7,18 @@ This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 _Nenhuma alteração registrada ainda. / No unreleased changes recorded yet._
 
+## [v0.1.2] - 2026-11-03
+
+### Correções
+
+- As preferências agora mantêm um perfil por dispositivo e restauram todos os componentes configurados após inicialização e retorno da suspensão ou hibernação.
+- Configurações antigas com um único alvo são migradas sem perder o perfil existente.
+
+### Fixes
+
+- Preferences now keep one profile per device and restore every configured component after startup and resume from sleep or hibernation.
+- Legacy settings with a single target are migrated without losing the existing profile.
+
 ## [v0.1.1] - 2026-11-03
 
 ### Correções

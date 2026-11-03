@@ -20,6 +20,7 @@
 9. **A running service missed hardware resets.** The process remained active across system sleep, so neither service restart policy nor startup restoration ran after resume. RGB Studio now listens to logind, pauses GPU effects and CLI clients before sleep, invalidates any in-flight SDK connection, recreates the server after wake, and retries device discovery if hardware appears late.
 10. **GPU animation launched a CLI process for every frame.** Live logs showed 45-second client timeouts during Breathe. Frames now use a persistent SDK socket, validate the selected GPU's name/type, set Direct once, and wait for SDK acknowledgements; the first successful frame confirms startup restoration.
 11. **A malformed settings field could discard all saved preferences.** Non-object JSON roots are rejected safely, while invalid numeric fields fall back individually. Device grouping now prefers OpenRGB controller types, avoiding vendor-name collisions such as ASUS GPUs being treated as motherboards.
+12. **Only the most recently applied target was persisted.** The real hibernation log confirmed that resume restored `device:3` (the GPU) while the motherboard had no saved profile. Preferences now retain one profile per component, so applying a device or group no longer erases the settings for other components.
 
 ## Hardware verification
 

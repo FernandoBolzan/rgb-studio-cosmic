@@ -19,7 +19,7 @@
 
 ## Local state
 
-- Preferences: `~/.config/rgb-panel/settings.json`.
+- Preferences: `~/.config/rgb-panel/settings.json`; each configured device or ARGB zone has its own restorable profile, while the latest UI target remains available for selection.
 - Scenes: `~/.config/rgb-panel/presets/*.json`.
 - JSON state is written via a temporary sibling file and atomically replaced. Older settings with a single `zone_led_count` remain a fallback during migration.
 

@@ -520,6 +520,8 @@ class Panel:
         self.startup_restore_device_signature = None
         self.startup_restore_stable_scans = 0
         self.startup_restore_retry_timer = None
+        self.startup_restore_incomplete = False
+        self.startup_restore_awaiting_effect = False
         self.system_sleeping = False
         self.login1_connection = None
         self.sleep_signal_subscription = None
@@ -556,6 +558,7 @@ class Panel:
             'brightness': 100,
             'speed': 50,
             'restore_on_startup': False,
+            'target_profiles': [],
         }
         try:
             data = json.loads(CONFIG.read_text(encoding='utf-8'))
@@ -563,11 +566,14 @@ class Panel:
                 logging.warning('Ignoring RGB Studio settings: the JSON root is not an object')
                 return defaults
 
-            def bounded_int(key, default, minimum=0, maximum=100):
+            def bounded_value(value, default, minimum=0, maximum=100):
                 try:
-                    return max(minimum, min(maximum, int(data.get(key, default))))
+                    return max(minimum, min(maximum, int(value)))
                 except (TypeError, ValueError, OverflowError):
                     return default
+
+            def bounded_int(key, default, minimum=0, maximum=100):
+                return bounded_value(data.get(key, default), default, minimum, maximum)
 
             count = bounded_int('zone_led_count', DEFAULT_ZONE_LEDS, 1, 500)
             color = str(data.get('color', '#39D353')).upper()
@@ -590,6 +596,52 @@ class Panel:
             restore_on_startup = data.get('restore_on_startup', 'color' in data)
             if not isinstance(restore_on_startup, bool):
                 restore_on_startup = 'color' in data
+            target_profiles = []
+            raw_profiles = data.get('target_profiles', [])
+            if isinstance(raw_profiles, list):
+                for raw_profile in raw_profiles:
+                    if not isinstance(raw_profile, dict):
+                        continue
+                    profile_target = raw_profile.get('target')
+                    profile_color = str(raw_profile.get('color', color)).upper()
+                    if (not isinstance(profile_target, str) or
+                            not re.fullmatch(r'#[0-9A-F]{6}', profile_color)):
+                        continue
+                    profile = {
+                        'target': profile_target,
+                        'target_label': (raw_profile.get('target_label')
+                                         if isinstance(raw_profile.get('target_label'), str)
+                                         else None),
+                        'target_kind': (raw_profile.get('target_kind')
+                                        if isinstance(raw_profile.get('target_kind'), str)
+                                        else None),
+                        'color': profile_color,
+                        'mode': (raw_profile.get('mode')
+                                 if isinstance(raw_profile.get('mode'), str) else None),
+                        'brightness': bounded_value(
+                            raw_profile.get('brightness', 100), 100),
+                        'speed': bounded_value(raw_profile.get('speed', 50), 50),
+                    }
+                    profile_zone_count = raw_profile.get('zone_led_count')
+                    if profile_zone_count is not None:
+                        profile['zone_led_count'] = bounded_value(
+                            profile_zone_count, count, 1, 500)
+                    target_profiles.append(profile)
+            elif raw_profiles:
+                logging.warning('Ignoring malformed RGB Studio target profiles')
+            if not target_profiles and restore_on_startup:
+                # Migrate the legacy single-target preference without losing it.
+                target_profiles.append({
+                    'target': target if isinstance(target, str) else 'all',
+                    'target_label': target_label if isinstance(target_label, str) else None,
+                    'target_kind': target_kind if isinstance(target_kind, str) else None,
+                    'color': color,
+                    'mode': mode if isinstance(mode, str) else None,
+                    'brightness': bounded_int('brightness', 100),
+                    'speed': bounded_int('speed', 50),
+                    **({'zone_led_count': zone_led_counts.get(target, count)}
+                       if target_kind == 'zone' else {}),
+                })
             return {
                 'zone_led_count': count,
                 'zone_led_counts': zone_led_counts,
@@ -602,6 +654,7 @@ class Panel:
                 'speed': bounded_int('speed', 50),
                 # Old settings files contain a color written only after applying it.
                 'restore_on_startup': restore_on_startup,
+                'target_profiles': target_profiles,
             }
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return defaults
@@ -663,6 +716,8 @@ class Panel:
         self.startup_restore_attempts = 0
         self.startup_restore_device_signature = None
         self.startup_restore_stable_scans = 0
+        self.startup_restore_incomplete = False
+        self.startup_restore_awaiting_effect = False
         self.cancel_startup_restore_retry()
         logging.info('System resumed; RGB Studio will rediscover devices and restore settings')
         GLib.timeout_add_seconds(RESUME_RESTORE_DELAY_SECONDS, self.restore_after_resume)
@@ -899,6 +954,12 @@ class Panel:
             GLib.source_remove(timer)
             self.software_timer = None
 
+    def stop_software_effect_for_devices(self, devices):
+        animation = getattr(self, 'software_animation', None)
+        if animation and any(device['id'] == animation['device']['id']
+                             for device in devices):
+            self.stop_software_effect()
+
     def quit_app(self, *_):
         self.stop_software_effect()
         self.cancel_active_commands()
@@ -928,6 +989,11 @@ class Panel:
             if quiet:
                 self.schedule_startup_restore_retry()
             return
+        previous = self.software_animation
+        if previous and previous['target_key'] != spec['key']:
+            self.record_applied_configuration(
+                previous['color'], previous['target_key'], 'Direct',
+                previous['brightness'], previous['speed'])
         self.stop_software_effect()
         generation = self.software_effect_generation
         device = devices[0]
@@ -964,11 +1030,18 @@ class Panel:
         if self.busy or self.software_frame_busy:
             return True
 
-        brightness = (round(self.brightness.get_value()) if hasattr(self, 'brightness')
+        editing_effect_target = (
+            getattr(self, 'selected_target', animation['target_key']) ==
+            animation['target_key'])
+        brightness = (round(self.brightness.get_value())
+                      if editing_effect_target and hasattr(self, 'brightness')
                       else animation['brightness'])
-        speed = (round(self.speed.get_value()) if hasattr(self, 'speed')
+        speed = (round(self.speed.get_value())
+                 if editing_effect_target and hasattr(self, 'speed')
                  else animation['speed'])
-        color = self.selected_color if hasattr(self, 'selected_color') else animation['color']
+        color = (self.selected_color
+                 if editing_effect_target and hasattr(self, 'selected_color')
+                 else animation['color'])
         frame_color = self.software_effect_color(
             animation['mode'], color, brightness, speed,
             time.monotonic() - animation['started'])
@@ -990,6 +1063,7 @@ class Panel:
             self.stop_software_effect()
             self.set_status('Falha no efeito de GPU', 'error')
             if animation.get('startup_restore'):
+                self.startup_restore_awaiting_effect = False
                 self.schedule_startup_restore_retry()
             return False
         if not animation['saved']:
@@ -999,8 +1073,12 @@ class Panel:
             logging.info('Started GPU software effect %s on %s',
                          animation['mode'], animation['target'])
         if animation.get('startup_restore'):
-            self.startup_restore_completed = True
-            self.cancel_startup_restore_retry()
+            self.startup_restore_awaiting_effect = False
+            if self.startup_restore_incomplete:
+                self.schedule_startup_restore_retry()
+            else:
+                self.startup_restore_completed = True
+                self.cancel_startup_restore_retry()
         return False
 
     def submit(self, job, done, quiet=False):
@@ -1025,6 +1103,11 @@ class Panel:
                     menu_status = 'Restaurando efeito da GPU…'
                 elif self.system_sleeping:
                     menu_status = 'Aguardando o retorno do sistema…'
+                elif self.startup_restore_awaiting_effect:
+                    menu_status = 'Restaurando efeito da GPU…'
+                elif self.startup_restore_incomplete:
+                    self.schedule_startup_restore_retry()
+                    menu_status = 'Tentando restaurar todos os componentes…'
                 elif self.startup_restore_started:
                     self.startup_restore_completed = True
                     self.cancel_startup_restore_retry()
@@ -1112,8 +1195,8 @@ class Panel:
                 self.schedule_startup_restore_retry()
                 return
             self.startup_restore_started = True
-            logging.info('Restoring saved RGB target %r in mode %r',
-                         self.settings.get('target'), self.settings.get('mode'))
+            logging.info('Restoring %s saved RGB target profiles',
+                         len(self.settings.get('target_profiles', [])) or 1)
             self.restore_saved_configuration()
 
     def startup_device_list_is_stable(self, devices):
@@ -1186,42 +1269,113 @@ class Panel:
         if not self.devices:
             self.schedule_startup_restore_retry()
             return
+        self.startup_restore_awaiting_effect = False
+        profiles = self.settings.get('target_profiles') or [{
+            'target': self.settings.get('target') or 'all',
+            'target_label': self.settings.get('target_label'),
+            'target_kind': self.settings.get('target_kind'),
+            'color': self.settings['color'],
+            'mode': self.settings.get('mode'),
+            'brightness': self.settings['brightness'],
+            'speed': self.settings['speed'],
+        }]
+        pending = []
+        software_profiles = []
+        self.startup_restore_incomplete = False
 
-        target_key = self.settings.get('target') or 'all'
-        spec = self.find_saved_target(
-            target_key, self.settings.get('target_label'),
-            self.settings.get('target_kind'))
-        if not spec:
-            logging.warning('Saved RGB target %r is unavailable; skipping startup restore',
-                            target_key)
-            self.set_status('O componente salvo não foi encontrado', 'error')
-            self.schedule_startup_restore_retry()
+        for profile in profiles:
+            saved_target = profile.get('target') or 'all'
+            spec = self.find_saved_target(
+                saved_target, profile.get('target_label'), profile.get('target_kind'))
+            if not spec:
+                logging.warning('Saved RGB target %r is unavailable', saved_target)
+                self.startup_restore_incomplete = True
+                continue
+
+            requested_mode = profile.get('mode')
+            if requested_mode in SOFTWARE_GPU_MODES:
+                if (spec['kind'] != 'device' or len(spec['devices']) != 1 or
+                        spec['devices'][0].get('type', '').casefold() != 'gpu'):
+                    logging.warning('Saved software GPU effect has invalid target %r',
+                                    saved_target)
+                    self.startup_restore_incomplete = True
+                    continue
+                software_profiles.append((profile, spec))
+                continue
+
+            devices = spec['devices']
+            common = self.common_modes(devices)
+            if requested_mode and requested_mode.casefold() not in common:
+                logging.warning('Saved RGB mode %r is unavailable for target %r',
+                                requested_mode, spec['key'])
+                self.startup_restore_incomplete = True
+                continue
+            mode = self.preferred_mode(devices, requested_mode)
+            if not mode:
+                logging.warning('No compatible saved RGB mode for target %r', spec['key'])
+                self.startup_restore_incomplete = True
+                continue
+            pending.append((profile, spec, mode))
+
+        if len(software_profiles) > 1:
+            # A single software animation loop is supported by the current UI.
+            logging.warning('Multiple saved GPU software effects found; restoring the latest one')
+            self.startup_restore_incomplete = True
+            software_profiles = software_profiles[-1:]
+
+        software_profile = software_profiles[0] if software_profiles else None
+        if not pending and not software_profile:
+            if self.startup_restore_incomplete:
+                self.set_status('Alguns componentes salvos não foram encontrados', 'error')
+                self.schedule_startup_restore_retry()
+            else:
+                self.startup_restore_completed = True
+                self.cancel_startup_restore_retry()
             return
-        target_key = spec['key']
 
-        devices = spec['devices']
-        requested_mode = self.settings.get('mode')
-        if requested_mode in SOFTWARE_GPU_MODES:
+        if software_profile:
+            self.startup_restore_awaiting_effect = True
+
+        def apply_profiles():
+            for profile, spec, mode in pending:
+                if spec['kind'] == 'zone':
+                    device = spec['device']
+                    zone_count = profile.get('zone_led_count')
+                    if zone_count is None:
+                        zone_count = self.zone_led_count_for(spec)
+                    args = self.device_effect_args(
+                        device, profile['color'], mode, profile['brightness'],
+                        profile['speed'], zone=spec['zone_index'], zone_size=zone_count)
+                else:
+                    args = []
+                    for device in spec['devices']:
+                        args.extend(self.device_effect_args(
+                            device, profile['color'], mode, profile['brightness'],
+                            profile['speed']))
+                self.command(args)
+                logging.info('Restored RGB target %s using mode %s', spec['key'], mode)
+            return True
+
+        def complete(_result):
+            # Persist migrated legacy settings and any target IDs resolved by label.
+            self.save_settings()
+            if software_profile:
+                profile, spec = software_profile
+                logging.info('Restoring saved RGB targets; starting GPU effect %s on %s',
+                             profile['mode'], spec['label'])
+                self.start_software_effect(
+                    spec, profile['color'], profile['mode'], profile['brightness'],
+                    profile['speed'], quiet=True)
+            else:
+                logging.info('Restored %s saved RGB target profiles', len(pending))
+
+        if pending:
+            self.submit(apply_profiles, complete, quiet=True)
+        elif software_profile:
+            profile, spec = software_profile
             self.start_software_effect(
-                spec, self.settings['color'], requested_mode,
-                self.settings['brightness'], self.settings['speed'], quiet=True)
-            return
-        common = self.common_modes(devices)
-        if requested_mode and requested_mode.casefold() not in common:
-            logging.warning('Saved RGB mode %r is unavailable for target %r',
-                            requested_mode, target_key)
-            self.set_status('O efeito salvo não está disponível neste componente', 'error')
-            self.schedule_startup_restore_retry()
-            return
-        mode = self.preferred_mode(devices, requested_mode)
-        color = self.settings['color']
-        brightness = self.settings['brightness']
-        speed = self.settings['speed']
-        if spec['kind'] == 'zone':
-            self.apply_zone(spec, color, mode, brightness, speed, quiet=True)
-        else:
-            self.apply_devices(devices, color, mode, brightness, speed,
-                               target_key=target_key, quiet=True)
+                spec, profile['color'], profile['mode'], profile['brightness'],
+                profile['speed'], quiet=True)
 
     def find_saved_target(self, key=None, label=None, kind=None):
         keyed = self.target_specs.get(key) if key else None
@@ -1246,7 +1400,7 @@ class Panel:
         return keyed
 
     def record_applied_configuration(self, color, target_key, mode, brightness,
-                                     speed, zone_led_count=None):
+                                     speed, zone_led_count=None, device_modes=None):
         spec = self.target_specs.get(target_key)
         self.settings.update({
             'color': color.upper(),
@@ -1258,9 +1412,56 @@ class Panel:
             'speed': speed,
             'restore_on_startup': True,
         })
+        if not isinstance(self.settings.get('target_profiles'), list):
+            self.settings['target_profiles'] = []
+
         if zone_led_count is not None:
             self.settings['zone_led_count'] = zone_led_count
             self.settings.setdefault('zone_led_counts', {})[target_key] = zone_led_count
+
+        profiles = self.settings['target_profiles']
+        if spec and spec['kind'] == 'zone':
+            targets = [(spec['key'], spec, mode)]
+        elif spec:
+            profiles[:] = [saved for saved in profiles
+                           if not isinstance(saved, dict) or
+                           saved.get('target') != target_key]
+            targets = []
+            for device in spec['devices']:
+                device_key = f"device:{device['id']}"
+                device_spec = self.target_specs.get(device_key, {
+                    'key': device_key, 'kind': 'device', 'label': device['name'],
+                })
+                resolved_mode = (device_modes.get(device['id'])
+                                 if isinstance(device_modes, dict) else None)
+                if resolved_mode is None:
+                    resolved_mode = (mode if mode in SOFTWARE_GPU_MODES else
+                                     self.mode_for_device(device, mode))
+                targets.append((device_key, device_spec, resolved_mode))
+        else:
+            profile_target = target_key or 'all'
+            targets = [(profile_target, {
+                'key': profile_target,
+                'kind': self.settings.get('target_kind'),
+                'label': self.settings.get('target_label'),
+            }, mode)]
+
+        for profile_target, profile_spec, profile_mode in targets:
+            profile = {
+                'target': profile_target,
+                'target_label': profile_spec.get('label'),
+                'target_kind': profile_spec.get('kind'),
+                'color': color.upper(),
+                'mode': profile_mode,
+                'brightness': brightness,
+                'speed': speed,
+            }
+            if profile_spec.get('kind') == 'zone':
+                profile['zone_led_count'] = zone_led_count or self.zone_led_count_for(spec)
+            profiles[:] = [saved for saved in profiles
+                           if not isinstance(saved, dict) or
+                           saved.get('target') != profile_target]
+            profiles.append(profile)
         self.save_settings()
 
     def zone_led_count_for(self, spec):
@@ -1393,8 +1594,6 @@ class Panel:
     def select_target(self, key):
         if key not in self.target_specs:
             return
-        if key != self.selected_target:
-            self.stop_software_effect()
         self.selected_target = key
         self._updating_targets = True
         if self.compact_target.get_active_id() != key:
@@ -1502,7 +1701,6 @@ class Panel:
         if mode in SOFTWARE_GPU_MODES:
             self.start_software_effect(spec, self.selected_color, mode, brightness, speed)
             return
-        self.stop_software_effect()
         if spec['kind'] == 'zone':
             self.apply_zone(spec, self.selected_color, mode, brightness, speed)
         else:
@@ -1522,11 +1720,11 @@ class Panel:
             self.set_status('Escolha um tom HEX válido', 'error')
             return
         applied_color = color.upper()
-        self.stop_software_effect()
-        self.sync_color(applied_color)
         target_ids = {device['id'] for device in devices}
         all_ids = {device['id'] for device in self.devices}
         target_key = self.target_for_devices(devices, target_key)
+        self.stop_software_effect_for_devices(devices)
+        self.sync_color(applied_color)
         spec = self.target_specs.get(target_key)
         if spec:
             target = spec['label']
@@ -1544,12 +1742,16 @@ class Panel:
                     device, color, mode, brightness, speed))
             if not args:
                 raise RuntimeError('O modo selecionado não está disponível nesses dispositivos.')
-            return self.command(args)
+            resolved_modes = {
+                device['id']: self.mode_for_device(device, mode) for device in devices
+            }
+            return self.command(args), resolved_modes
 
-        def complete(_result):
+        def complete(result):
+            _output, applied_modes = result
             self.record_applied_configuration(
                 applied_color, target_key, self.preferred_mode(devices, mode),
-                brightness, speed)
+                brightness, speed, device_modes=applied_modes)
             self.set_status(f"{target} · {applied_color} aplicado", 'good')
         self.submit(job, complete, quiet=quiet)
 
@@ -1557,8 +1759,8 @@ class Panel:
         if not re.fullmatch(r'#[0-9A-F]{6}', color.upper()):
             self.set_status('Escolha um tom HEX válido', 'error')
             return
-        self.stop_software_effect()
         device = spec['device']
+        self.stop_software_effect_for_devices([device])
         zone = spec['zone_index']
         count = (self.led_count.get_value_as_int()
                  if hasattr(self, 'led_count') and self.selected_target == spec['key']
@@ -1586,6 +1788,9 @@ class Panel:
         def complete(_result):
             self.settings['zone_led_count'] = count
             self.settings.setdefault('zone_led_counts', {})[spec['key']] = count
+            for profile in self.settings.get('target_profiles', []):
+                if isinstance(profile, dict) and profile.get('target') == spec['key']:
+                    profile['zone_led_count'] = count
             self.save_settings()
             self.set_status(f'Zona ARGB configurada para {count} LEDs', 'good')
         self.submit(job, complete)

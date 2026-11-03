@@ -6,7 +6,7 @@ Painel de iluminação RGB para a área de trabalho COSMIC, com interface GTK 3 
 
 > Projeto comunitário em desenvolvimento. O suporte depende dos dispositivos e modos expostos pela versão do OpenRGB instalada.
 
-> Versão atual: [**v0.1.1**](https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.1) · [histórico de alterações](CHANGELOG.md)
+> Versão atual: [**v0.1.2**](https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.2) · [histórico de alterações](CHANGELOG.md)
 
 ## Recursos
 
@@ -22,7 +22,7 @@ A seleção de cor atualiza a prévia. A iluminação só é enviada ao hardware
 
 Os efeitos disponíveis dependem de cada dispositivo. Ao selecionar **Todo o sistema** ou um grupo, a lista mostra somente os modos comuns a todos os componentes do alvo. Selecione um componente individual para acessar os efeitos específicos dele. O RGB Studio envia ao OpenRGB o nome exato do modo anunciado pelo dispositivo; se um modo salvo deixar de existir, a restauração informa o problema em vez de trocar silenciosamente para outro efeito. Brilho e velocidade também dependem do suporte do efeito e do dispositivo.
 
-Em módulos Corsair Vengeance RGB, os efeitos de duas cores recebem uma segunda tonalidade mais escura derivada da cor escolhida. Para GPUs que oferecem apenas **Direct** e **Off**, o RGB Studio disponibiliza **Piscar**, **Respirar** e **Arco-íris** por software usando uma conexão SDK persistente; mantenha o RGB Studio aberto enquanto esses efeitos estiverem ativos. A configuração salva é reaplicada na inicialização e quando o computador retorna da suspensão ou hibernação.
+Em módulos Corsair Vengeance RGB, os efeitos de duas cores recebem uma segunda tonalidade mais escura derivada da cor escolhida. Para GPUs que oferecem apenas **Direct** e **Off**, o RGB Studio disponibiliza **Piscar**, **Respirar** e **Arco-íris** por software usando uma conexão SDK persistente; mantenha o RGB Studio aberto enquanto esses efeitos estiverem ativos. O RGB Studio mantém um perfil por componente e reaplica todos os perfis configurados na inicialização e quando o computador retorna da suspensão ou hibernação.
 
 ## Capturas de tela
 
@@ -51,7 +51,7 @@ Em algumas instalações do OpenRGB no Linux, são necessárias regras udev para
 ## Instalação
 
 ```bash
-git clone --branch v0.1.1 --depth 1 https://github.com/FernandoBolzan/rgb-studio-cosmic.git
+git clone --branch v0.1.2 --depth 1 https://github.com/FernandoBolzan/rgb-studio-cosmic.git
 cd rgb-studio-cosmic
 install -Dm755 rgb_panel.py "$HOME/.local/share/rgb-panel/rgb_panel.py"
 install -Dm644 rgb-panel.svg "$HOME/.local/share/rgb-panel/rgb-panel.svg"
@@ -64,7 +64,7 @@ O ícone RGB aparece na área de indicadores do COSMIC. Abra **RGB Studio → Ab
 
 ## Preferências e cenas
 
-As preferências ficam em `~/.config/rgb-panel/settings.json`, e as cenas em `~/.config/rgb-panel/presets/`. Esses arquivos são locais e não fazem parte do repositório. Depois que o OpenRGB detecta os dispositivos, o RGB Studio reaplica a última iluminação configurada ao iniciar e ao retornar da suspensão ou hibernação. Se algum componente demorar a aparecer, o aplicativo tenta detectá-lo novamente. A preferência guarda o alvo, a cor, o efeito, o brilho, a velocidade e a quantidade de LEDs por zona ARGB. As cenas também guardam o componente e a contagem da zona.
+As preferências ficam em `~/.config/rgb-panel/settings.json`, e as cenas em `~/.config/rgb-panel/presets/`. Esses arquivos são locais e não fazem parte do repositório. Depois que o OpenRGB detecta os dispositivos, o RGB Studio reaplica os perfis salvos de cada componente ao iniciar e ao retornar da suspensão ou hibernação. Se algum componente demorar a aparecer, o aplicativo tenta detectá-lo novamente. Cada perfil guarda alvo, cor, efeito, brilho, velocidade e, para zonas ARGB, a quantidade de LEDs. As cenas também guardam o componente e a contagem da zona.
 
 Arquivos de preferências de versões antigas guardam apenas a cor e a quantidade de LEDs. Na primeira restauração, esses arquivos são aplicados a **Todo o sistema**, priorizando um modo de cor fixa quando disponível, com brilho em 100% e velocidade em 50%; depois, a aplicação salva também o alvo e os demais ajustes.
 

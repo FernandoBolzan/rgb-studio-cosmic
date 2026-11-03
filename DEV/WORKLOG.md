@@ -4,6 +4,15 @@ Record a short summary here after substantive work.
 
 Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for older entries after compaction.
 
+## 2026-11-03 - Restore every configured component after hibernation
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: persist per-device profiles, migrate the legacy single target, restore motherboard/memory/GPU profiles independently, and document the behavior.
+- Why: real resume logs showed that the app restored only GPU `device:3`; the old settings format overwrote earlier device targets.
+- Verified: 28 tests, compilation, whitespace checks, matching installed-source hash, and service logs showing ASUS Direct, both Corsair Color Pulse profiles, and Palit Breathe restored with `NRestarts=0`.
+- Risks: a real hibernation cycle after the fix remains pending; the motherboard's lost legacy effect was not in the old settings, so the user approved green Direct as its recovered profile.
+- Next context: verify the next hibernation; preserve the local service-unit edit.
+
 ## 2026-11-03 - Restore RGB lighting after startup and resume
 
 - Spec: `DEV/SPECS/ACTIVE.md`

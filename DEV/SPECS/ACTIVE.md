@@ -12,6 +12,7 @@ Reliably apply and restore RGB settings across device discovery, login, and resu
 - Use one persistent TCP SDK connection for GPU animation frames, select Direct once, validate the selected controller identity, and wait for frame acknowledgements.
 - Treat a GPU software effect as restored only after its first frame succeeds; retry if that frame fails.
 - Prefer OpenRGB controller types for device grouping and recover valid settings fields when other JSON fields are malformed.
+- Persist a separate RGB profile per component/zone so applying one target does not erase other saved targets; restore all profiles after startup and resume.
 - Add regression tests and update user and developer documentation.
 - Install the verified app locally and confirm startup restoration through the user service.
 
@@ -24,6 +25,7 @@ Reliably apply and restore RGB settings across device discovery, login, and resu
 - Malformed settings roots and invalid numeric fields do not crash startup or discard valid saved fields.
 - Device classification prefers OpenRGB types and avoids grouping unrelated peripherals by vendor name.
 - Failed startup GPU frames schedule restoration again; restoration completes only after a successful frame.
+- Applying a second target preserves the first target's profile; restoration reapplies motherboard, each memory module, and GPU profiles independently.
 - 21 regression tests, Python compilation, and whitespace checks pass.
 - Installed source matches the repository, service is active, and logs confirm saved GPU restoration and sustained SDK frames.
 
@@ -42,6 +44,6 @@ Reliably apply and restore RGB settings across device discovery, login, and resu
 
 ## Status
 
-- State: persistent SDK transport, settings hardening, type-based grouping, pending-connection invalidation, 21 regression tests, local installation, and startup restoration verified. GPU Breathe ran beyond the previous timeout window without CLI frame processes; an actual sleep/resume cycle remains untested.
+- State: per-target profile persistence and multi-component restoration installed; real pre-fix hibernation logs confirmed only the GPU target was saved. 28 regression tests pass and a service restart restored the motherboard, both DIMMs, and GPU. A physical hibernation cycle after this fix remains pending.
 - Owner: Codex
 - Last updated: 2026-11-03

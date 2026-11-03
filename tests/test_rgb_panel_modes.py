@@ -13,6 +13,8 @@ import rgb_panel
 class PanelModeTests(unittest.TestCase):
     def setUp(self):
         self.panel = rgb_panel.Panel.__new__(rgb_panel.Panel)
+        self.panel.startup_restore_incomplete = False
+        self.panel.startup_restore_awaiting_effect = False
         self.memory = {
             'id': '0',
             'name': 'Corsair Vengeance RGB Pro DDR4',
@@ -96,6 +98,141 @@ class PanelModeTests(unittest.TestCase):
         self.assertEqual(settings['brightness'], 100)
         self.assertEqual(settings['speed'], 87)
         self.assertTrue(settings['restore_on_startup'])
+
+    def test_load_settings_migrates_legacy_single_target_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'settings.json'
+            config.write_text(
+                '{"color":"#2EFF00","target":"device:3",'
+                '"target_label":"Palit GPU","target_kind":"device",'
+                '"mode":"software:breathe","restore_on_startup":true}',
+                encoding='utf-8')
+            with patch.object(rgb_panel, 'CONFIG', config):
+                settings = self.panel.load_settings()
+
+        self.assertEqual(len(settings['target_profiles']), 1)
+        self.assertEqual(settings['target_profiles'][0]['target'], 'device:3')
+        self.assertEqual(settings['target_profiles'][0]['mode'], 'software:breathe')
+        self.assertEqual(settings['target_profiles'][0]['color'], '#2EFF00')
+
+    def test_recording_new_target_keeps_previous_component_profiles(self):
+        board = {'id': '2', 'name': 'ASUS PRIME B550M-A', 'type': 'Motherboard',
+                 'modes': ['Direct']}
+        gpu = {'id': '3', 'name': 'Palit GeForce RTX 3060 LHR', 'type': 'GPU',
+               'modes': ['Off', 'Direct']}
+        self.panel.devices = [board, gpu]
+        self.panel.target_specs = {
+            'all': {'key': 'all', 'kind': 'all', 'label': 'Todo o sistema',
+                    'devices': [board, gpu]},
+            'device:2': {'key': 'device:2', 'kind': 'device', 'label': board['name'],
+                         'devices': [board], 'device': board},
+            'device:3': {'key': 'device:3', 'kind': 'device', 'label': gpu['name'],
+                         'devices': [gpu], 'device': gpu},
+        }
+        self.panel.settings = {'target_profiles': []}
+        self.panel.save_settings = Mock()
+
+        self.panel.record_applied_configuration(
+            '#2EFF00', 'all', 'Direct', 100, 50)
+        self.panel.record_applied_configuration(
+            '#2EFF00', 'device:3', 'software:breathe', 100, 100)
+
+        profiles = {profile['target']: profile
+                    for profile in self.panel.settings['target_profiles']}
+        self.assertEqual(set(profiles), {'device:2', 'device:3'})
+        self.assertEqual(profiles['device:2']['mode'], 'Direct')
+        self.assertEqual(profiles['device:3']['mode'], 'software:breathe')
+        self.assertEqual(profiles['device:2']['color'], '#2EFF00')
+        self.assertEqual(profiles['device:3']['color'], '#2EFF00')
+
+    def test_resume_restore_applies_all_saved_targets_and_gpu_effect(self):
+        board = {'id': '2', 'name': 'ASUS PRIME B550M-A', 'type': 'Motherboard',
+                 'modes': ['Direct', 'Off'], 'zones': [], 'leds': []}
+        memory_a = dict(self.memory)
+        memory_a.update({'id': '0', 'zones': [], 'leds': []})
+        memory_b = dict(self.memory)
+        memory_b.update({'id': '1', 'zones': [], 'leds': []})
+        gpu = {'id': '3', 'name': 'Palit GeForce RTX 3060 LHR', 'type': 'GPU',
+               'modes': ['Off', 'Direct'], 'zones': [], 'leds': ['Entire Zone']}
+        self.panel.devices = [memory_a, memory_b, board, gpu]
+        self.panel.detected = True
+        self.panel.target_specs, _ = self.panel.make_targets()
+        self.panel.settings = {
+            'target': 'device:3', 'target_label': gpu['name'], 'target_kind': 'device',
+            'color': '#2EFF00', 'mode': 'software:breathe',
+            'brightness': 100, 'speed': 100, 'restore_on_startup': True,
+            'target_profiles': [
+                {'target': 'device:2', 'target_label': board['name'],
+                 'target_kind': 'device', 'color': '#2EFF00', 'mode': 'Direct',
+                 'brightness': 100, 'speed': 100},
+                {'target': 'device:0', 'target_label': memory_a['name'],
+                 'target_kind': 'device', 'color': '#2EFF00', 'mode': 'Color Pulse',
+                 'brightness': 100, 'speed': 100},
+                {'target': 'device:1', 'target_label': memory_b['name'],
+                 'target_kind': 'device', 'color': '#2EFF00', 'mode': 'Color Pulse',
+                 'brightness': 100, 'speed': 100},
+                {'target': 'device:3', 'target_label': gpu['name'],
+                 'target_kind': 'device', 'color': '#2EFF00',
+                 'mode': 'software:breathe', 'brightness': 100, 'speed': 100},
+            ],
+        }
+        self.panel.startup_restore_completed = False
+        self.panel.startup_restore_awaiting_effect = False
+        self.panel.startup_restore_incomplete = False
+        self.panel.system_sleeping = False
+        self.panel.command = Mock()
+        self.panel.set_status = Mock()
+        self.panel.save_settings = Mock()
+        submitted = []
+        self.panel.submit = Mock(
+            side_effect=lambda job, done, quiet=False: submitted.append((job, done, quiet)))
+        self.panel.start_software_effect = Mock()
+
+        self.panel.restore_saved_configuration()
+
+        self.assertEqual(len(submitted), 1)
+        job, done, quiet = submitted[0]
+        self.assertTrue(quiet)
+        job()
+        self.assertEqual(self.panel.command.call_count, 3)
+        board_args = self.panel.command.call_args_list[0].args[0]
+        self.assertEqual(
+            board_args, ['--device', '2', '--mode', 'Direct', '--color', '2EFF00'])
+        memory_args = [call.args[0] for call in self.panel.command.call_args_list[1:]]
+        self.assertTrue(all(args[args.index('--mode') + 1] == 'Color Pulse'
+                            for args in memory_args))
+        self.assertTrue(all(args[args.index('--color') + 1] == '2EFF00,0E4C00'
+                            for args in memory_args))
+        done(True)
+        self.panel.save_settings.assert_called_once_with()
+        self.panel.start_software_effect.assert_called_once_with(
+            self.panel.target_specs['device:3'], '#2EFF00', 'software:breathe',
+            100, 100, quiet=True)
+        self.assertTrue(self.panel.startup_restore_awaiting_effect)
+
+    def test_new_restore_attempt_clears_stale_gpu_wait_state(self):
+        board = {'id': '2', 'name': 'ASUS PRIME B550M-A', 'type': 'Motherboard',
+                 'modes': ['Direct'], 'zones': [], 'leds': []}
+        self.panel.devices = [board]
+        self.panel.detected = True
+        self.panel.target_specs, _ = self.panel.make_targets()
+        self.panel.settings = {
+            'color': '#2EFF00', 'brightness': 100, 'speed': 50,
+            'target_profiles': [{
+                'target': 'device:2', 'target_label': board['name'],
+                'target_kind': 'device', 'color': '#2EFF00', 'mode': 'Direct',
+                'brightness': 100, 'speed': 50,
+            }],
+        }
+        self.panel.startup_restore_awaiting_effect = True
+        self.panel.startup_restore_completed = False
+        self.panel.system_sleeping = False
+        self.panel.submit = Mock()
+
+        self.panel.restore_saved_configuration()
+
+        self.assertFalse(self.panel.startup_restore_awaiting_effect)
+        self.panel.submit.assert_called_once()
 
     def test_sdk_update_uses_one_persistent_packet_for_all_gpu_leds(self):
         class FakeSocket:
@@ -202,6 +339,51 @@ class PanelModeTests(unittest.TestCase):
                 ]
                 self.assertNotEqual(colors[0], colors[1])
                 self.assertTrue(all(re.fullmatch(r'#[0-9A-F]{6}', color) for color in colors))
+
+    def test_gpu_animation_keeps_its_saved_controls_when_another_target_is_selected(self):
+        self.panel.busy = False
+        self.panel.software_frame_busy = False
+        self.panel.software_animation = {
+            'device': {'id': '3'}, 'target_key': 'device:3',
+            'mode': 'software:breathe', 'color': '#2EFF00',
+            'brightness': 100, 'speed': 82, 'started': 0,
+        }
+        self.panel.selected_target = 'device:2'
+        self.panel.selected_color = '#FF0000'
+        self.panel.brightness = Mock()
+        self.panel.brightness.get_value.return_value = 15
+        self.panel.speed = Mock()
+        self.panel.speed.get_value.return_value = 20
+        self.panel.software_effect_color = Mock(return_value='#2EFF00')
+        self.panel.pool = Mock()
+
+        self.assertTrue(self.panel.software_effect_frame())
+
+        args = self.panel.software_effect_color.call_args.args
+        self.assertEqual(args[:4], ('software:breathe', '#2EFF00', 100, 82))
+
+    def test_selecting_another_component_does_not_stop_gpu_animation(self):
+        self.panel.target_specs = {'device:2': {'key': 'device:2'}}
+        self.panel.selected_target = 'device:3'
+        self.panel.compact_target = Mock()
+        self.panel.compact_target.get_active_id.return_value = 'device:3'
+        self.panel.stop_software_effect = Mock()
+        self.panel.update_target_view = Mock()
+
+        self.panel.select_target('device:2')
+
+        self.assertEqual(self.panel.selected_target, 'device:2')
+        self.panel.stop_software_effect.assert_not_called()
+
+    def test_unrelated_target_does_not_stop_active_gpu_animation(self):
+        self.panel.software_animation = {'device': {'id': '3'}}
+        self.panel.stop_software_effect = Mock()
+
+        self.panel.stop_software_effect_for_devices([{'id': '2'}])
+        self.panel.stop_software_effect.assert_not_called()
+
+        self.panel.stop_software_effect_for_devices([{'id': '3'}])
+        self.panel.stop_software_effect.assert_called_once_with()
 
     def test_startup_restore_retries_when_devices_are_not_ready(self):
         self.panel.devices = []
