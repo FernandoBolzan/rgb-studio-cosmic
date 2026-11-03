@@ -6,7 +6,7 @@ RGB lighting controls for the COSMIC desktop, built with GTK 3 and powered by [O
 
 > Community project in development. Device and effect support depends on what the installed OpenRGB version exposes.
 
-> Current version: [**v0.1.0**](https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.0) · [changelog](CHANGELOG.md)
+> Current version: [**v0.1.1**](https://github.com/FernandoBolzan/rgb-studio-cosmic/releases/tag/v0.1.1) · [changelog](CHANGELOG.md)
 
 ## Features
 
@@ -22,7 +22,7 @@ Choosing a color updates the preview. Hardware changes are sent only after click
 
 Available effects depend on each device. When **All devices** or a group is selected, the list shows only modes shared by every component in that target. Select an individual component to access its specific effects. RGB Studio sends OpenRGB the exact mode name reported by the device; if a saved mode is no longer available, restoration reports the issue instead of silently switching to a different effect. Brightness and speed also depend on support from the effect and device.
 
-For Corsair Vengeance RGB memory, two-color modes receive a darker secondary shade derived from the selected color. For GPUs that only expose **Direct** and **Off**, RGB Studio adds software **Blink**, **Breathe**, and **Rainbow** effects; keep RGB Studio running while one of these effects is active.
+For Corsair Vengeance RGB memory, two-color modes receive a darker secondary shade derived from the selected color. For GPUs that only expose **Direct** and **Off**, RGB Studio adds software **Blink**, **Breathe**, and **Rainbow** effects over a persistent SDK connection; keep RGB Studio running while one of these effects is active. Saved lighting is restored at startup and when the computer resumes from sleep or hibernation.
 
 ## Screenshots
 
@@ -51,7 +51,7 @@ Some OpenRGB Linux installations require udev rules to access hardware. See the 
 ## Installation
 
 ```bash
-git clone --branch v0.1.0 --depth 1 https://github.com/FernandoBolzan/rgb-studio-cosmic.git
+git clone --branch v0.1.1 --depth 1 https://github.com/FernandoBolzan/rgb-studio-cosmic.git
 cd rgb-studio-cosmic
 install -Dm755 rgb_panel.py "$HOME/.local/share/rgb-panel/rgb_panel.py"
 install -Dm644 rgb-panel.svg "$HOME/.local/share/rgb-panel/rgb-panel.svg"
@@ -64,7 +64,7 @@ The RGB icon appears in the COSMIC status area. Choose **RGB Studio → Open ful
 
 ## Preferences and scenes
 
-Preferences are stored in `~/.config/rgb-panel/settings.json`, and scenes in `~/.config/rgb-panel/presets/`. These files stay local and are not part of the repository. After OpenRGB detects the devices, RGB Studio reapplies the last lighting configuration at startup. Preferences store the target, color, effect, brightness, speed, and each ARGB zone's LED count. Scenes also store the component and zone count.
+Preferences are stored in `~/.config/rgb-panel/settings.json`, and scenes in `~/.config/rgb-panel/presets/`. These files stay local and are not part of the repository. Once OpenRGB detects the devices, RGB Studio reapplies the last lighting configuration at startup and after sleep or hibernation. If a component appears late, the app retries device discovery. Preferences store the target, color, effect, brightness, speed, and each ARGB zone's LED count. Scenes also store the component and zone count.
 
 Preference files from older versions store only the color and LED count. On the first restore, the app applies them to **All devices**, preferring a fixed-color mode when available, with 100% brightness and 50% speed; future applications also save the target and remaining settings.
 

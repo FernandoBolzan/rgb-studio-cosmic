@@ -7,6 +7,26 @@ This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 _Nenhuma alteração registrada ainda. / No unreleased changes recorded yet._
 
+## [v0.1.1] - 2026-11-03
+
+### Correções
+
+- A restauração aguarda dispositivos que demoram a aparecer no início do sistema e reaplica a configuração salva ao retornar da suspensão ou hibernação.
+- Efeitos de GPU são pausados durante a suspensão; a conexão SDK é reiniciada e o efeito só é considerado restaurado depois do primeiro quadro aplicado.
+- Efeitos animados da GPU usam uma conexão SDK persistente em vez de iniciar um processo OpenRGB por quadro; o controlador é validado pelo nome e tipo antes do envio.
+- Conexões SDK pendentes são invalidadas durante a suspensão para evitar que um efeito antigo seja iniciado ao retornar.
+- Listas de dispositivos e configurações JSON inválidas são tratadas sem derrubar a interface nem descartar outros campos válidos.
+- A classificação de placa-mãe, memória e GPU prioriza o tipo de controlador informado pelo OpenRGB.
+
+### Fixes
+
+- Startup restoration now retries when devices appear late and reapplies saved lighting after the system resumes from sleep or hibernation.
+- GPU effects pause during sleep; the SDK connection restarts on resume, and restoration is confirmed only after the first frame is applied.
+- Animated GPU effects use a persistent SDK connection instead of starting an OpenRGB process for every frame; the controller name and type are checked before updates.
+- Pending SDK connections are invalidated during sleep so a stale effect cannot start after resume.
+- Invalid device lists and JSON settings are handled without crashing the interface or discarding other valid fields.
+- Motherboard, memory, and GPU grouping now prefers the controller type reported by OpenRGB.
+
 ## [v0.1.0] - 2026-11-02
 
 ### Português

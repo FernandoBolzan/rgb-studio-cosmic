@@ -3,7 +3,7 @@
 ## Scope and evidence
 
 - Reviewed device discovery, target grouping, effect selection/application, startup restoration, ARGB zone sizing, scene persistence, GTK layout, and the OpenRGB CLI boundary in `rgb_panel.py`.
-- Checked the project GitHub issues and pull requests on 2026-11-02. Both lists were empty: [issues](https://github.com/FernandoBolzan/rgb-studio-cosmic/issues) and [pull requests](https://github.com/FernandoBolzan/rgb-studio-cosmic/pulls).
+- Checked the project GitHub issues and pull requests on 2026-11-03. Both lists were empty: [issues](https://github.com/FernandoBolzan/rgb-studio-cosmic/issues) and [pull requests](https://github.com/FernandoBolzan/rgb-studio-cosmic/pulls).
 - OpenRGB documents modes as device-specific and exposes speed/brightness according to mode support in its [CLI source](https://github.com/CalcProgrammer1/OpenRGB/blob/master/cli.cpp). Its [release page](https://openrgb.org/releases.html) is the reference for the current compatible release.
 - The local installation has two Corsair Vengeance RGB Pro memory modules, an ASUS PRIME B550M-A motherboard, and a Palit GeForce RTX 3060. The advertised mode lists differ across these controllers.
 
@@ -17,12 +17,16 @@
 6. **Interrupted JSON writes could truncate settings or scenes.** Settings and scenes now replace their files atomically.
 7. **Corsair DRAM modes were missing required colors.** Color Shift, Color Pulse, Color Wave, Visor, and Rain require two colors; the CLI warning can exit successfully. RGB Studio now supplies a darker second shade, and a retry handles OpenRGB's color-count warning.
 8. **The Palit GPU only exposes Direct and Off.** RGB Studio now offers software Blink, Breathe, and Rainbow. It waits for the selected GPU to appear in the SDK device list before starting frames, preventing a startup race while OpenRGB scans hardware.
+9. **A running service missed hardware resets.** The process remained active across system sleep, so neither service restart policy nor startup restoration ran after resume. RGB Studio now listens to logind, pauses GPU effects and CLI clients before sleep, invalidates any in-flight SDK connection, recreates the server after wake, and retries device discovery if hardware appears late.
+10. **GPU animation launched a CLI process for every frame.** Live logs showed 45-second client timeouts during Breathe. Frames now use a persistent SDK socket, validate the selected GPU's name/type, set Direct once, and wait for SDK acknowledgements; the first successful frame confirms startup restoration.
+11. **A malformed settings field could discard all saved preferences.** Non-object JSON roots are rejected safely, while invalid numeric fields fall back individually. Device grouping now prefers OpenRGB controller types, avoiding vendor-name collisions such as ASUS GPUs being treated as motherboards.
 
 ## Hardware verification
 
 - Both Corsair memory modules were exercised through all 11 advertised modes; each command completed without an OpenRGB error.
 - The Palit GeForce RTX 3060 accepted Blink, Breathe, and Rainbow frame updates through the SDK client. The GPU was restored to Direct green, and both memory modules were restored to green Color Pulse.
-- Regression tests cover the color counts and generated animation frames; see `DEV/VERIFY.md` for the current run.
+- The saved Palit `Breathe` effect restored after service restart using SDK protocol 6; the selected controller identity matched the Palit GPU and the first accepted frame updated the saved settings. A multi-minute stability check is recorded in `DEV/VERIFY.md`.
+- Regression tests now cover color counts, SDK transport, settings parsing, controller grouping, startup retry, and stale connections as well as lighting modes.
 
 ## Remaining improvement backlog
 
@@ -32,11 +36,11 @@ OpenRGB's basic device listing does not give RGB Studio a complete capability ma
 
 ### P1 — automated regression coverage and CI
 
-The initial regression suite covers Corsair color counts and generated GPU frames. Extend it with isolated tests for device-list parsing, case-insensitive mode intersection, device-native mode resolution, target restoration after device reordering, scene validation, and per-zone migration; add a CI syntax/build gate.
+The regression suite covers 21 mode, parsing, settings, SDK packet, target grouping, startup/resume, and stale-connection cases. Remaining coverage includes case-insensitive mode intersection, device-native mode resolution, target restoration after device reordering, scene validation, and per-zone migration; add a CI syntax/build gate.
 
 ### P2 — stable device identity and classification
 
-OpenRGB numeric device IDs may change, while device categories are inferred from product-name substrings such as “ASUS”, “Corsair”, and “GeForce”. Prefer stable vendor/product identifiers from the SDK where available, make category metadata explicit, and keep a safe generic target when metadata is missing.
+Saved target keys still contain OpenRGB numeric IDs, with label/type fallback during restoration. Animated GPU updates now verify the SDK controller name and type, and category grouping prefers OpenRGB type metadata; consider stable vendor/product identifiers for persisted targets when OpenRGB exposes them consistently.
 
 ### P2 — split the GTK/controller module
 
@@ -44,7 +48,7 @@ OpenRGB numeric device IDs may change, while device categories are inferred from
 
 ### P2 — reconnect and failure recovery
 
-Startup restoration has a bounded retry window. Add a user-visible reconnect action and retain retry state when OpenRGB starts late or the daemon restarts after the initial attempts.
+Startup and resume restoration retry device discovery for a bounded window. A broken SDK connection during an already-running interactive animation still stops the effect and reports an error; consider reconnecting it without user action after OpenRGB restarts.
 
 ### P3 — packaging and contributor workflow
 

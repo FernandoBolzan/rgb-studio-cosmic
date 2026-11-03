@@ -1,42 +1,47 @@
-# Active Spec - RGB lighting reliability
+# Active Spec - RGB reliability review
 
 ## Goal
 
-Fix Corsair memory effects that failed because OpenRGB requires multiple colors, add usable blink-style effects for the Palit GPU, and install and publish the verified change to `main`.
+Reliably apply and restore RGB settings across device discovery, login, and resume, while keeping GPU software effects stable and correctly targeting the selected OpenRGB controller.
 
 ## Scope
 
-- Supply the advertised color count for each Corsair DRAM mode, deriving a dark secondary color when two are required.
-- Add software Blink, Breathe, and Rainbow effects to GPUs that expose Direct/Off only.
-- Wait until the target GPU is visible to the OpenRGB SDK client before starting animation frames.
-- Keep the current saved memory target and Color Pulse configuration after tests.
-- Add focused regression tests and update user/developer documentation.
-- Install the app, restart and verify the user service, then publish intended code/docs to `origin/main`, excluding the pre-existing service-unit edit.
+- Retry device discovery and saved target resolution when hardware appears late during startup; require two stable device scans before applying.
+- Subscribe to logind's `PrepareForSleep` signal and close software animation SDK connections and active OpenRGB CLI clients before sleep.
+- After resume, wait for hardware initialization, restart the SDK server, rediscover devices, and reapply saved settings.
+- Use one persistent TCP SDK connection for GPU animation frames, select Direct once, validate the selected controller identity, and wait for frame acknowledgements.
+- Treat a GPU software effect as restored only after its first frame succeeds; retry if that frame fails.
+- Prefer OpenRGB controller types for device grouping and recover valid settings fields when other JSON fields are malformed.
+- Add regression tests and update user and developer documentation.
+- Install the verified app locally and confirm startup restoration through the user service.
 
 ## Acceptance
 
-- All 11 modes advertised by each Corsair DIMM accept the selected color and supported controls without OpenRGB errors.
-- GPU Blink, Breathe, and Rainbow frame updates reach the selected GPU via the SDK; starting before GPU discovery does not fail silently.
-- Software effects are labeled as app-driven and require RGB Studio to remain active.
-- The saved memory target/mode/color remain intact after physical tests and service restart reapplies that state.
-- Regression tests, syntax, and whitespace checks pass; installed source matches repository source; service is active and enabled.
-- The published `main` commit contains only intended app, test, and documentation files.
+- Saved settings are retried up to 24 times at five-second intervals when devices or targets are initially unavailable; first application waits for two stable scans.
+- Sleep notification pauses the GPU effect, closes its SDK connection, and terminates in-flight CLI clients.
+- Resume resets stale restore state, waits eight seconds, refreshes devices, restarts the SDK server, and reapplies saved settings.
+- GPU animation frames do not spawn per-frame CLI clients; the SDK controller identity matches the saved GPU.
+- Malformed settings roots and invalid numeric fields do not crash startup or discard valid saved fields.
+- Device classification prefers OpenRGB types and avoids grouping unrelated peripherals by vendor name.
+- Failed startup GPU frames schedule restoration again; restoration completes only after a successful frame.
+- 21 regression tests, Python compilation, and whitespace checks pass.
+- Installed source matches the repository, service is active, and logs confirm saved GPU restoration and sustained SDK frames.
 
 ## Constraints
 
-- Preserve the pre-existing uncommitted `contrib/rgb-panel.service` edit (`Restart=always`); do not stage or install it as part of this change.
-- Physical mode tests visibly change lighting; restore both DIMMs and the GPU to the user's green configuration afterward.
+- Preserve the pre-existing uncommitted `contrib/rgb-panel.service` edit (`Restart=always`).
+- Keep the existing saved RGB settings and verify the effect configured by the user after installing.
+- Do not claim a full hibernation cycle was physically verified unless the machine actually performs one during this task.
 
 ## Verification Plan
 
 - Run `/usr/bin/python3 -m unittest discover -s tests -v`, `/usr/bin/python3 -m py_compile rgb_panel.py tests/test_rgb_panel_modes.py`, and `git diff --check`.
-- Test the Corsair effects on both DIMMs and send multiple generated frames for each GPU software mode through a verified SDK connection.
-- Restore two DIMMs to Color Pulse green and GPU to Direct green; confirm saved settings still target memory.
-- Install current source, restart the user service, and verify active/enabled status, restore logs/state, and installed-source hash.
-- Confirm the staged diff excludes `contrib/rgb-panel.service`; commit and push the implementation to `origin/main`.
+- Verify logind's D-Bus signal contract and exercise sleep/resume callbacks with regression tests.
+- Install the current source, restart `rgb-panel.service`, and inspect active state, logs, saved configuration, installed-source hash, and child processes after a multi-minute run.
+- Record whether a real sleep/resume cycle was performed; callback simulation does not substitute for hardware wake verification.
 
 ## Status
 
-- State: released as `v0.1.0`; README and changelog are published on `main`, and the annotated tag points to `161f6e0`.
+- State: persistent SDK transport, settings hardening, type-based grouping, pending-connection invalidation, 21 regression tests, local installation, and startup restoration verified. GPU Breathe ran beyond the previous timeout window without CLI frame processes; an actual sleep/resume cycle remains untested.
 - Owner: Codex
-- Last updated: 2026-11-02
+- Last updated: 2026-11-03

@@ -11,7 +11,9 @@ import shlex
 import shutil
 import signal
 import socket
+import struct
 import subprocess
+import threading
 import time
 from colorsys import hsv_to_rgb, rgb_to_hsv
 from pathlib import Path
@@ -20,7 +22,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
 gi.require_version('AyatanaAppIndicator3', '0.1')
-from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3 as Indicator
+from gi.repository import Gtk, Gdk, Gio, GLib, AyatanaAppIndicator3 as Indicator
 
 BASE = Path.home() / '.local/share/rgb-panel'
 BUNDLED_OPENRGB = BASE / 'openrgb/AppRun'
@@ -30,6 +32,9 @@ OPENRGB = (os.environ.get('RGB_PANEL_OPENRGB') or
 CONFIG = Path.home() / '.config/rgb-panel/settings.json'
 PRESETS = Path.home() / '.config/rgb-panel/presets'
 DEFAULT_ZONE_LEDS = 500
+MAX_STARTUP_RESTORE_RETRIES = 24
+STARTUP_RESTORE_RETRY_SECONDS = 5
+RESUME_RESTORE_DELAY_SECONDS = 8
 QUICK = [
     ('Verde vivo', '#39D353'), ('Esmeralda', '#00A86B'),
     ('Menta', '#75F0C0'), ('Azul gelo', '#79D8FF'),
@@ -127,16 +132,244 @@ def parse_devices(output):
         match = re.match(r'^(\d+): (.+)$', line)
         if match:
             devices.append({'id': match[1], 'name': match[2], 'type': '',
-                            'description': '', 'modes': [], 'zones': []})
+                            'description': '', 'modes': [], 'zones': [], 'leds': []})
         elif devices and line.strip().startswith('Type:'):
             devices[-1]['type'] = line.split(':', 1)[1].strip()
         elif devices and line.strip().startswith('Description:'):
             devices[-1]['description'] = line.split(':', 1)[1].strip()
         elif devices and line.strip().startswith('Modes:'):
-            devices[-1]['modes'] = [m.strip('[]') for m in shlex.split(line.split(':', 1)[1].strip())]
-        elif devices and line.strip().startswith('Zones:'):
-            devices[-1]['zones'] = shlex.split(line.split(':', 1)[1].strip())
+            try:
+                devices[-1]['modes'] = [
+                    mode.strip('[]')
+                    for mode in shlex.split(line.split(':', 1)[1].strip())]
+            except ValueError:
+                logging.warning('Ignoring malformed OpenRGB mode list: %s', line.strip())
+        elif devices and line.strip().startswith(('Zones:', 'LEDs:')):
+            field = 'zones' if line.strip().startswith('Zones:') else 'leds'
+            try:
+                devices[-1][field] = shlex.split(line.split(':', 1)[1].strip())
+            except ValueError:
+                logging.warning('Ignoring malformed OpenRGB %s list: %s', field, line.strip())
     return devices
+
+
+def device_category(device):
+    """Return a known hardware category, preferring OpenRGB's controller type."""
+    device_type = device.get('type', '').strip().casefold()
+    categories = {
+        'motherboard': 'motherboard',
+        'dram': 'memory',
+        'gpu': 'gpu',
+    }
+    if device_type in categories:
+        return categories[device_type]
+    if device_type and device_type not in ('unknown', 'other'):
+        return None
+
+    identity = (device.get('name', '') + ' ' +
+                device.get('description', '')).casefold()
+    if any(token in identity for token in ('geforce', 'radeon', 'graphics card', ' gpu')):
+        return 'gpu'
+    if any(token in identity for token in ('memory', 'dram', 'dimm', 'ddr3', 'ddr4', 'ddr5')) or re.search(r'\bram\b', identity):
+        return 'memory'
+    if any(token in identity for token in ('motherboard', 'mainboard', 'prime', 'tuf')):
+        return 'motherboard'
+    return None
+
+
+class OpenRGBFrameClient:
+    """Small persistent client for OpenRGB's documented TCP SDK protocol."""
+    MAGIC = b'ORGB'
+    MAX_PACKET_SIZE = 16 * 1024 * 1024
+    MAX_PROTOCOL_VERSION = 6
+    DEVICE_TYPES = {'motherboard': 0, 'dram': 1, 'gpu': 2}
+
+    def __init__(self, device_index, led_count, host='127.0.0.1', port=6742,
+                 timeout=2.0, expected_name=None, expected_type=None,
+                 socket_factory=socket.create_connection):
+        self.socket = socket_factory((host, port), timeout=timeout)
+        self.socket.settimeout(timeout)
+        self.timeout = timeout
+        self.led_count = int(led_count)
+        self.protocol_version = 0
+        self.device_id = None
+        self.expected_name = expected_name
+        self.expected_type = expected_type
+        if not 1 <= self.led_count <= 0xFFFF:
+            self.close()
+            raise ValueError('O OpenRGB informou uma quantidade inválida de LEDs para a GPU.')
+        try:
+            self._initialize(int(device_index))
+        except Exception:
+            self.close()
+            raise
+
+    @staticmethod
+    def _packet(packet_id, payload=b'', device_id=0):
+        return struct.pack('<4sIII', OpenRGBFrameClient.MAGIC, device_id,
+                           packet_id, len(payload)) + payload
+
+    def _send_packet(self, packet_id, payload=b'', device_id=0):
+        self.socket.sendall(self._packet(packet_id, payload, device_id))
+
+    def _read_exact(self, size):
+        data = bytearray()
+        while len(data) < size:
+            chunk = self.socket.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError('A conexão SDK do OpenRGB foi encerrada.')
+            data.extend(chunk)
+        return bytes(data)
+
+    def _read_packet(self):
+        header = self._read_exact(16)
+        magic, device_id, packet_id, size = struct.unpack('<4sIII', header)
+        if magic != self.MAGIC:
+            raise ConnectionError('O servidor OpenRGB enviou um cabeçalho SDK inválido.')
+        if size > self.MAX_PACKET_SIZE:
+            raise ConnectionError(f'O servidor OpenRGB enviou um pacote grande demais ({size} bytes).')
+        return device_id, packet_id, self._read_exact(size)
+
+    def _wait_for_packet(self, packet_id, timeout=None):
+        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout(f'Tempo esgotado aguardando o pacote SDK {packet_id}.')
+            self.socket.settimeout(remaining)
+            _device_id, received_id, payload = self._read_packet()
+            if received_id == 100:
+                raise ConnectionError('A lista de dispositivos OpenRGB mudou durante o efeito.')
+            if received_id == 10 and len(payload) == 8:
+                acknowledged_id, status = struct.unpack('<II', payload)
+                if status and acknowledged_id == packet_id:
+                    raise RuntimeError(
+                        f'O OpenRGB rejeitou o pacote SDK {packet_id} (status {status}).')
+            if received_id == packet_id:
+                return payload
+
+    def _wait_for_ack(self, packet_id):
+        if self.protocol_version < 6:
+            return
+        deadline = time.monotonic() + self.timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout(f'Tempo esgotado aguardando confirmação SDK {packet_id}.')
+            self.socket.settimeout(remaining)
+            _device_id, received_id, payload = self._read_packet()
+            if received_id == 100:
+                raise ConnectionError('A lista de dispositivos OpenRGB mudou durante o efeito.')
+            if received_id != 10 or len(payload) != 8:
+                continue
+            acknowledged_id, status = struct.unpack('<II', payload)
+            if acknowledged_id != packet_id:
+                continue
+            if status:
+                raise RuntimeError(
+                    f'O OpenRGB rejeitou o pacote SDK {packet_id} (status {status}).')
+            self.socket.settimeout(self.timeout)
+            return
+
+    @staticmethod
+    def parse_controller_identity(data):
+        if len(data) < 10:
+            raise ConnectionError('Dados de controlador OpenRGB incompletos.')
+        data_size = struct.unpack_from('<I', data)[0]
+        device_type = struct.unpack_from('<i', data, 4)[0]
+        name_size = struct.unpack_from('<H', data, 8)[0]
+        if data_size != len(data) or name_size < 1 or 10 + name_size > len(data):
+            raise ConnectionError('Dados de controlador OpenRGB inválidos.')
+        name = data[10:10 + name_size].decode('utf-8', errors='replace').rstrip('\0')
+        return name, device_type
+
+    def _controller_identity(self, device_id):
+        request_data = (struct.pack('<I', self.protocol_version)
+                        if self.protocol_version else b'')
+        self._send_packet(1, request_data, device_id)
+        return self.parse_controller_identity(self._wait_for_packet(1))
+
+    def _initialize(self, device_index):
+        self._send_packet(50, b'RGB Studio\0')
+        self._send_packet(40, struct.pack('<I', self.MAX_PROTOCOL_VERSION))
+        try:
+            version_data = self._wait_for_packet(40, timeout=0.5)
+            if len(version_data) != 4:
+                raise ConnectionError('Resposta de versão SDK do OpenRGB inválida.')
+            self.protocol_version = min(
+                struct.unpack('<I', version_data)[0], self.MAX_PROTOCOL_VERSION)
+        except socket.timeout:
+            # OpenRGB protocol 0 predates version negotiation and sends no reply.
+            self.protocol_version = 0
+
+        if self.protocol_version >= 6:
+            self._send_packet(52, struct.pack('<I', (1 << 0) | (1 << 16)))
+            self._wait_for_packet(53)
+
+        self._send_packet(0)
+        count_data = self._wait_for_packet(0)
+        if len(count_data) < 4:
+            raise ConnectionError('Resposta de quantidade de dispositivos OpenRGB inválida.')
+        controller_count = struct.unpack_from('<I', count_data)[0]
+        if controller_count > 4096:
+            raise ConnectionError('O servidor OpenRGB informou uma quantidade inválida de dispositivos.')
+        expected_size = 4 + (controller_count * 4 if self.protocol_version >= 6 else 0)
+        if len(count_data) != expected_size:
+            raise ConnectionError('A resposta de dispositivos OpenRGB está incompleta.')
+        if not 0 <= device_index < controller_count:
+            raise RuntimeError(
+                f'A GPU selecionada não existe no servidor SDK do OpenRGB (índice {device_index}).')
+        controller_ids = (
+            struct.unpack_from('<' + 'I' * controller_count, count_data, 4)
+            if self.protocol_version >= 6 else tuple(range(controller_count)))
+        selected_device_id = controller_ids[device_index]
+        if self.expected_name is not None:
+            expected_type = self.DEVICE_TYPES.get(
+                str(self.expected_type or '').casefold())
+            candidate_indexes = [device_index] + [
+                index for index in range(controller_count) if index != device_index]
+            matching_ids = []
+            for index in candidate_indexes:
+                candidate_id = controller_ids[index]
+                name, device_type = self._controller_identity(candidate_id)
+                if (name == self.expected_name and
+                        (expected_type is None or device_type == expected_type)):
+                    matching_ids.append(candidate_id)
+                    if index == device_index:
+                        break
+            if not matching_ids:
+                raise RuntimeError(
+                    f"A GPU {self.expected_name} não foi encontrada no servidor SDK do OpenRGB.")
+            if selected_device_id not in matching_ids:
+                if len(matching_ids) != 1:
+                    raise RuntimeError(
+                        f"Há mais de um controlador chamado {self.expected_name}; "
+                        'não posso escolher a GPU com segurança.')
+                selected_device_id = matching_ids[0]
+        self.device_id = selected_device_id
+        self.socket.settimeout(self.timeout)
+
+    def set_custom_mode(self):
+        self._send_packet(1100, device_id=self.device_id)
+        self._wait_for_ack(1100)
+
+    def update_color(self, color):
+        rgb = bytes(int(color[index:index + 2], 16) for index in (1, 3, 5))
+        one_color = rgb + b'\0'
+        color_data = struct.pack('<H', self.led_count) + one_color * self.led_count
+        payload = struct.pack('<I', 4 + len(color_data)) + color_data
+        self._send_packet(1050, payload, self.device_id)
+        self._wait_for_ack(1050)
+
+    def close(self):
+        connection = getattr(self, 'socket', None)
+        self.socket = None
+        if connection:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
 
 
 def write_json_atomic(path, data):
@@ -267,8 +500,12 @@ class ColorCanvas:
 class Panel:
     def __init__(self):
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.active_commands = set()
+        self.active_commands_lock = threading.Lock()
         self.openrgb_server_process = None
         self.sdk_server_active = False
+        self.software_sdk_client = None
+        self.software_effect_generation = 0
         self.software_animation = None
         self.software_timer = None
         self.software_frame_busy = False
@@ -278,7 +515,14 @@ class Panel:
         self.selected_target = 'all'
         self.busy = False
         self.startup_restore_started = False
+        self.startup_restore_completed = False
         self.startup_restore_attempts = 0
+        self.startup_restore_device_signature = None
+        self.startup_restore_stable_scans = 0
+        self.startup_restore_retry_timer = None
+        self.system_sleeping = False
+        self.login1_connection = None
+        self.sleep_signal_subscription = None
         self.window = None
         self.settings = self.load_settings()
         self.selected_target = self.settings.get('target') or 'all'
@@ -297,6 +541,7 @@ class Panel:
         self.indicator.set_title('RGB Studio')
         self.build_menu('Procurando dispositivos…')
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit_app)
+        self.watch_system_sleep()
         self.refresh()
 
     def load_settings(self):
@@ -314,7 +559,17 @@ class Panel:
         }
         try:
             data = json.loads(CONFIG.read_text(encoding='utf-8'))
-            count = int(data.get('zone_led_count', DEFAULT_ZONE_LEDS))
+            if not isinstance(data, dict):
+                logging.warning('Ignoring RGB Studio settings: the JSON root is not an object')
+                return defaults
+
+            def bounded_int(key, default, minimum=0, maximum=100):
+                try:
+                    return max(minimum, min(maximum, int(data.get(key, default))))
+                except (TypeError, ValueError, OverflowError):
+                    return default
+
+            count = bounded_int('zone_led_count', DEFAULT_ZONE_LEDS, 1, 500)
             color = str(data.get('color', '#39D353')).upper()
             if not re.fullmatch(r'#[0-9A-F]{6}', color):
                 color = '#39D353'
@@ -336,15 +591,15 @@ class Panel:
             if not isinstance(restore_on_startup, bool):
                 restore_on_startup = 'color' in data
             return {
-                'zone_led_count': max(1, min(500, count)),
+                'zone_led_count': count,
                 'zone_led_counts': zone_led_counts,
                 'color': color,
                 'target': target if isinstance(target, str) else None,
                 'target_label': target_label if isinstance(target_label, str) else None,
                 'target_kind': target_kind if isinstance(target_kind, str) else None,
                 'mode': mode if isinstance(mode, str) else None,
-                'brightness': max(0, min(100, int(data.get('brightness', 100)))),
-                'speed': max(0, min(100, int(data.get('speed', 50)))),
+                'brightness': bounded_int('brightness', 100),
+                'speed': bounded_int('speed', 50),
                 # Old settings files contain a color written only after applying it.
                 'restore_on_startup': restore_on_startup,
             }
@@ -357,9 +612,80 @@ class Panel:
     def run_command(self, args, sdk_client=False):
         command = ([OPENRGB, '--client', '127.0.0.1:6742'] if sdk_client else
                    [OPENRGB, '--noautoconnect'])
-        return subprocess.run(
-            [*command, *args],
-            capture_output=True, text=True, timeout=45)
+        with self.active_commands_lock:
+            process = subprocess.Popen(
+                [*command, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True)
+            self.active_commands.add(process)
+        try:
+            stdout, stderr = process.communicate(timeout=45)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        finally:
+            with self.active_commands_lock:
+                self.active_commands.discard(process)
+        return subprocess.CompletedProcess(
+            process.args, process.returncode, stdout, stderr)
+
+    def watch_system_sleep(self):
+        try:
+            self.login1_connection = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            self.sleep_signal_subscription = self.login1_connection.signal_subscribe(
+                'org.freedesktop.login1', 'org.freedesktop.login1.Manager',
+                'PrepareForSleep', '/org/freedesktop/login1', None,
+                Gio.DBusSignalFlags.NONE, self.on_prepare_for_sleep)
+            logging.info('Watching system suspend/resume notifications via logind')
+        except GLib.Error:
+            logging.exception('Could not watch system suspend/resume notifications')
+
+    def on_prepare_for_sleep(self, _connection, _sender, _path, _interface, _signal,
+                             parameters):
+        GLib.idle_add(self.handle_sleep_state, bool(parameters.unpack()[0]))
+
+    def handle_sleep_state(self, entering_sleep):
+        if entering_sleep:
+            if self.system_sleeping:
+                return False
+            self.system_sleeping = True
+            logging.info('System is suspending; pausing RGB Studio effects')
+            self.stop_software_effect()
+            self.cancel_startup_restore_retry()
+            self.cancel_active_commands()
+            return False
+
+        if not self.system_sleeping:
+            return False
+        self.system_sleeping = False
+        self.startup_restore_started = False
+        self.startup_restore_completed = False
+        self.startup_restore_attempts = 0
+        self.startup_restore_device_signature = None
+        self.startup_restore_stable_scans = 0
+        self.cancel_startup_restore_retry()
+        logging.info('System resumed; RGB Studio will rediscover devices and restore settings')
+        GLib.timeout_add_seconds(RESUME_RESTORE_DELAY_SECONDS, self.restore_after_resume)
+        return False
+
+    def restore_after_resume(self):
+        if self.system_sleeping:
+            return False
+        if self.busy or self.software_frame_busy:
+            logging.info('Waiting for an in-flight OpenRGB command before resume restore')
+            return True
+        self.stop_software_effect()
+        self.stop_openrgb_server()
+        self.sdk_server_active = False
+        self.refresh()
+        return False
+
+    def cancel_active_commands(self):
+        with self.active_commands_lock:
+            processes = list(self.active_commands)
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
 
     def resize_mode_colors(self, args, mode_name, count):
         adjusted = []
@@ -530,8 +856,44 @@ class Panel:
         self.openrgb_server_process = None
         self.sdk_server_active = False
 
+    def connect_software_device(self, device):
+        logging.info('Connecting to the OpenRGB SDK for GPU %s (%s)',
+                     device['name'], device['id'])
+        self.ensure_sdk_server(device)
+        leds = device.get('leds') or []
+        if not leds:
+            raise RuntimeError(
+                f"O OpenRGB não informou os LEDs da GPU {device['name']}; "
+                'não posso iniciar o efeito com segurança.')
+        client = OpenRGBFrameClient(
+            device['id'], len(leds), expected_name=device['name'],
+            expected_type=device.get('type'))
+        try:
+            client.set_custom_mode()
+        except Exception:
+            client.close()
+            raise
+        logging.info('OpenRGB SDK selected GPU %s as controller %s',
+                     device['name'], client.device_id)
+        return client
+
+    def stop_software_sdk_client(self):
+        client = getattr(self, 'software_sdk_client', None)
+        self.software_sdk_client = None
+        if client:
+            client.close()
+
+    def send_software_frame(self, color):
+        client = self.software_sdk_client
+        if client is None:
+            raise RuntimeError('A conexão SDK do efeito de GPU não está ativa.')
+        client.update_color(color)
+
     def stop_software_effect(self):
+        self.software_effect_generation = getattr(
+            self, 'software_effect_generation', 0) + 1
         self.software_animation = None
+        self.stop_software_sdk_client()
         timer = getattr(self, 'software_timer', None)
         if timer:
             GLib.source_remove(timer)
@@ -539,7 +901,10 @@ class Panel:
 
     def quit_app(self, *_):
         self.stop_software_effect()
+        self.cancel_active_commands()
         self.stop_openrgb_server()
+        if self.login1_connection and self.sleep_signal_subscription:
+            self.login1_connection.signal_unsubscribe(self.sleep_signal_subscription)
         Gtk.main_quit()
 
     def software_effect_color(self, mode, color, brightness, speed, elapsed):
@@ -560,11 +925,19 @@ class Panel:
         if (len(devices) != 1 or devices[0].get('type', '').casefold() != 'gpu' or
                 'direct' not in {item.casefold() for item in devices[0]['modes']}):
             self.set_status('Efeito por software disponível para GPUs com modo Direct', 'error')
+            if quiet:
+                self.schedule_startup_restore_retry()
             return
         self.stop_software_effect()
+        generation = self.software_effect_generation
         device = devices[0]
 
-        def ready(_result):
+        def ready(client):
+            if (generation != self.software_effect_generation or
+                    self.system_sleeping):
+                client.close()
+                return False
+            self.software_sdk_client = client
             self.software_animation = {
                 'device': device,
                 'target_key': spec['key'],
@@ -575,12 +948,13 @@ class Panel:
                 'speed': speed,
                 'started': time.monotonic(),
                 'saved': False,
+                'startup_restore': quiet,
             }
             self.software_timer = GLib.timeout_add(150, self.software_effect_frame)
             self.set_status(f"{spec['label']} · {SOFTWARE_GPU_MODES[mode]} ativo", 'good')
             self.build_menu('Efeito de GPU ativo')
 
-        self.submit(lambda: self.ensure_sdk_server(device), ready, quiet=quiet)
+        self.submit(lambda: self.connect_software_device(device), ready, quiet=quiet)
 
     def software_effect_frame(self):
         animation = self.software_animation
@@ -598,10 +972,8 @@ class Panel:
         frame_color = self.software_effect_color(
             animation['mode'], color, brightness, speed,
             time.monotonic() - animation['started'])
-        args = ['--device', animation['device']['id'], '--mode', 'Direct',
-                '--color', frame_color.lstrip('#')]
         self.software_frame_busy = True
-        future = self.pool.submit(self.command, args)
+        future = self.pool.submit(self.send_software_frame, frame_color)
         future.add_done_callback(
             lambda result: GLib.idle_add(self.finish_software_frame, animation, result,
                                          color, brightness, speed))
@@ -617,11 +989,18 @@ class Panel:
             logging.exception('GPU software effect failed')
             self.stop_software_effect()
             self.set_status('Falha no efeito de GPU', 'error')
+            if animation.get('startup_restore'):
+                self.schedule_startup_restore_retry()
             return False
         if not animation['saved']:
             self.record_applied_configuration(
                 color, animation['target_key'], animation['mode'], brightness, speed)
             animation['saved'] = True
+            logging.info('Started GPU software effect %s on %s',
+                         animation['mode'], animation['target'])
+        if animation.get('startup_restore'):
+            self.startup_restore_completed = True
+            self.cancel_startup_restore_retry()
         return False
 
     def submit(self, job, done, quiet=False):
@@ -639,18 +1018,29 @@ class Panel:
         self.set_busy_controls(False)
         menu_status = 'Pronto'
         try:
-            done(future.result())
+            done_result = done(future.result())
             if quiet:
-                menu_status = 'Configuração reaplicada'
+                if (self.software_animation and
+                        self.software_animation.get('startup_restore')):
+                    menu_status = 'Restaurando efeito da GPU…'
+                elif self.system_sleeping:
+                    menu_status = 'Aguardando o retorno do sistema…'
+                elif self.startup_restore_started:
+                    self.startup_restore_completed = True
+                    self.cancel_startup_restore_retry()
+                    menu_status = 'Configuração reaplicada'
+                elif done_result is False:
+                    menu_status = 'Aguardando restauração…'
         except Exception as error:
             logging.exception('RGB action failed')
             self.set_status('Falha ao aplicar', 'error')
             if quiet:
-                if self.startup_restore_attempts < 3:
-                    GLib.timeout_add_seconds(5, self.retry_startup_restore)
+                if self.startup_restore_attempts < MAX_STARTUP_RESTORE_RETRIES:
+                    self.schedule_startup_restore_retry()
                     menu_status = 'Tentando restaurar…'
                 else:
-                    logging.error('Could not restore saved RGB settings after three attempts')
+                    logging.error('Could not restore saved RGB settings after %s retries',
+                                  self.startup_restore_attempts)
                     menu_status = 'Falha ao restaurar'
             else:
                 dialog = Gtk.MessageDialog(
@@ -663,8 +1053,35 @@ class Panel:
         return False
 
     def retry_startup_restore(self):
-        self.restore_saved_configuration()
+        self.startup_restore_retry_timer = None
+        if self.system_sleeping or self.startup_restore_completed:
+            return False
+        if self.busy:
+            self.schedule_startup_restore_retry()
+            return False
+        self.startup_restore_started = False
+        self.refresh()
         return False
+
+    def schedule_startup_restore_retry(self):
+        if (self.startup_restore_completed or self.system_sleeping or
+                not self.settings.get('restore_on_startup')):
+            return
+        if self.startup_restore_attempts >= MAX_STARTUP_RESTORE_RETRIES:
+            logging.error('Could not restore saved RGB settings after %s retries',
+                          self.startup_restore_attempts)
+            return
+        if self.startup_restore_retry_timer:
+            return
+        self.startup_restore_attempts += 1
+        self.startup_restore_retry_timer = GLib.timeout_add_seconds(
+            STARTUP_RESTORE_RETRY_SECONDS, self.retry_startup_restore)
+
+    def cancel_startup_restore_retry(self):
+        timer = self.startup_restore_retry_timer
+        if timer:
+            GLib.source_remove(timer)
+            self.startup_restore_retry_timer = None
 
     def refresh(self, *_):
         self.submit(
@@ -674,15 +1091,46 @@ class Panel:
     def loaded(self, devices):
         self.devices = devices
         self.detected = True
+        logging.info('OpenRGB scan found %s devices', len(devices))
         self.rebuild_targets()
         self.build_menu(f'{len(devices)} dispositivos')
         self.set_status(
             f'{len(devices)} dispositivos encontrados' if devices else 'Nenhum dispositivo RGB detectado',
             'good' if devices else 'error')
-        if (devices and self.settings.get('restore_on_startup') and
-                not self.startup_restore_started):
+        if (self.settings.get('restore_on_startup') and
+                not self.startup_restore_started and
+                not self.startup_restore_completed):
+            if not devices:
+                self.startup_restore_device_signature = None
+                self.startup_restore_stable_scans = 0
+                logging.info('Waiting for OpenRGB devices before restoring saved settings')
+                self.schedule_startup_restore_retry()
+                return
+            if not self.startup_device_list_is_stable(devices):
+                logging.info('Waiting for a stable OpenRGB device list (%s/2 scans)',
+                             self.startup_restore_stable_scans)
+                self.schedule_startup_restore_retry()
+                return
             self.startup_restore_started = True
+            logging.info('Restoring saved RGB target %r in mode %r',
+                         self.settings.get('target'), self.settings.get('mode'))
             self.restore_saved_configuration()
+
+    def startup_device_list_is_stable(self, devices):
+        signature = tuple(sorted((
+            str(device.get('id', '')),
+            str(device.get('name', '')),
+            str(device.get('type', '')).casefold(),
+            tuple(sorted((str(mode) for mode in device.get('modes', [])),
+                         key=str.casefold)),
+            tuple(str(zone) for zone in device.get('zones', [])),
+        ) for device in devices))
+        if signature != self.startup_restore_device_signature:
+            self.startup_restore_device_signature = signature
+            self.startup_restore_stable_scans = 1
+            return False
+        self.startup_restore_stable_scans += 1
+        return self.startup_restore_stable_scans >= 2
 
     def common_modes(self, devices):
         if not devices:
@@ -733,9 +1181,11 @@ class Panel:
         return None
 
     def restore_saved_configuration(self):
-        if not self.devices or self.startup_restore_attempts >= 3:
+        if self.startup_restore_completed or self.system_sleeping:
             return
-        self.startup_restore_attempts += 1
+        if not self.devices:
+            self.schedule_startup_restore_retry()
+            return
 
         target_key = self.settings.get('target') or 'all'
         spec = self.find_saved_target(
@@ -745,6 +1195,7 @@ class Panel:
             logging.warning('Saved RGB target %r is unavailable; skipping startup restore',
                             target_key)
             self.set_status('O componente salvo não foi encontrado', 'error')
+            self.schedule_startup_restore_retry()
             return
         target_key = spec['key']
 
@@ -760,6 +1211,7 @@ class Panel:
             logging.warning('Saved RGB mode %r is unavailable for target %r',
                             requested_mode, target_key)
             self.set_status('O efeito salvo não está disponível neste componente', 'error')
+            self.schedule_startup_restore_retry()
             return
         mode = self.preferred_mode(devices, requested_mode)
         color = self.settings['color']
@@ -824,12 +1276,9 @@ class Panel:
                     'meta': f'{len(self.devices)} dispositivos' if self.detected else
                     'Procurando componentes…', 'devices': self.devices}
         }
-        boards = [d for d in self.devices
-                  if any(key in d['name'].lower() for key in ('asus', 'prime', 'motherboard'))]
-        memories = [d for d in self.devices
-                    if any(key in d['name'].lower() for key in ('corsair', 'memory', 'dram', 'ram'))]
-        graphics = [d for d in self.devices
-                    if any(key in d['name'].lower() for key in ('geforce', 'radeon', 'gpu', 'palit'))]
+        boards = [d for d in self.devices if device_category(d) == 'motherboard']
+        memories = [d for d in self.devices if device_category(d) == 'memory']
+        graphics = [d for d in self.devices if device_category(d) == 'gpu']
         for device in boards:
             key = f"device:{device['id']}"
             specs[key] = {

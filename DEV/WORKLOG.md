@@ -4,6 +4,33 @@ Record a short summary here after substantive work.
 
 Use `HANDOFF.md` for the current snapshot and `HANDOFFS/WORKLOG_ARCHIVE.md` for older entries after compaction.
 
+## 2026-11-03 - Restore RGB lighting after startup and resume
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: retry device discovery at startup; listen for logind suspend/resume; pause GPU software effects and active OpenRGB clients before sleep; restart SDK and restore saved settings after wake; update tests and user/developer docs.
+- Why: the service stays running through sleep, so its startup restore never reruns after the hardware resets; late device discovery also had no retry path.
+- Verified: 12 unit tests, compilation, whitespace check, logind signal introspection, active user service, matching installed-source hash, and successful restoration of the saved GPU `Breathe` mode after service restart.
+- Risks: actual resume-cycle verification remains pending.
+- Next context: observe the next real resume cycle; keep `contrib/rgb-panel.service` user edit untouched.
+
+## 2026-11-03 - Stabilize GPU animation and review application reliability
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: persistent OpenRGB SDK frame client with controller identity checks; resilient settings/device parsing; type-based device grouping; stale-connection cancellation across sleep; tests and bilingual user/developer documentation.
+- Why: the previous GPU Breathe implementation launched one CLI client per frame and logged recurring 45-second timeouts; malformed settings or name collisions could also break startup/targeting.
+- Verified: 21 unit tests, compilation, whitespace checks, SDK 6 negotiation, Palit startup restoration, matching installed-source hash, a 3m32s transport run without timeout, and repeat startup restoration on the latest build.
+- Risks: actual sleep/resume cycle remains untested; interactive animation stops with an error if its SDK connection is lost mid-run.
+- Next context: observe a real resume cycle; preserve the existing service-unit edit.
+
+## 2026-11-03 - Release v0.1.1
+
+- Spec: `DEV/SPECS/ACTIVE.md`
+- Changed: versioned the changelog, pinned both READMEs to the release tag, and recorded release verification and rollback details.
+- Why: publish the startup/resume restoration and persistent GPU SDK fixes as a traceable patch release.
+- Verified: 21 unit tests, Python compilation, whitespace checks, release tag and main branch publication.
+- Risks: a real sleep/resume cycle remains untested; hardware behavior depends on OpenRGB and controller versions.
+- Next context: monitor the next real resume cycle and preserve the pre-existing service-unit edit.
+
 ## 2026-11-02 - Release v0.1.0
 
 - Spec: `DEV/SPECS/ACTIVE.md`
